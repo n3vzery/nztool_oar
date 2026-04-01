@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::*;
+use windows::Win32::System::ProcessStatus::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -19,6 +20,34 @@ static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
 static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Thread ID of the mouse hook thread for clean shutdown
 static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+// Helper to check if the game window is currently focused
+fn is_game_focused() -> bool {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+
+        let mut process_id = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+        if process_id == 0 {
+            return false;
+        }
+
+        let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, process_id);
+        if let Ok(h) = handle {
+            let mut buffer = [0u8; 260];
+            let len = K32GetModuleBaseNameA(h, None, &mut buffer);
+            let _ = CloseHandle(h);
+            if len > 0 {
+                let name = std::str::from_utf8(&buffer[..len as usize]).unwrap_or("");
+                return name.eq_ignore_ascii_case("OAR-Win64-Shipping.exe");
+            }
+        }
+        false
+    }
+}
 
 // Helper to pack coordinates into LPARAM safely for PostMessage
 fn pack_lparam(x: i32, y: i32) -> isize {
@@ -176,7 +205,7 @@ impl KeyBindApp {
                 };
                 let active = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
 
-                if active && enabled {
+                if active && enabled && is_game_focused() {
                     // Use our global variable that knows if the button is PHYSICALLY pressed
                     if REAL_LMB_DOWN.load(Ordering::SeqCst) {
                         send_mouse_click();
@@ -196,6 +225,11 @@ impl KeyBindApp {
             let callback = move |event: Event| {
                 // If it's a mouse event, just let it pass through to the system
                 if let EventType::ButtonPress(_) | EventType::ButtonRelease(_) | EventType::MouseMove {..} | EventType::Wheel {..} = event.event_type {
+                    return Some(event);
+                }
+
+                // Check if game is focused before handling hotkeys
+                if !is_game_focused() {
                     return Some(event);
                 }
 
