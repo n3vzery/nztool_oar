@@ -4,6 +4,7 @@ use eframe::egui;
 use inputbot::KeybdKey;
 use rdev::{grab, Event, EventType, Key};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -11,6 +12,28 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::HiDpi::*;
+
+// Global variable to store the real (physical) state of LMB
+static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    if n_code == HC_ACTION as i32 {
+        unsafe {
+            let ms_ll = *(l_param.0 as *const MSLLHOOKSTRUCT);
+            
+            // LLMHF_INJECTED (0x01) means the event was generated programmatically (SendInput).
+            // We ignore such events to prevent self-triggering.
+            if (ms_ll.flags & LLMHF_INJECTED) == 0 {
+                if w_param.0 as u32 == WM_LBUTTONDOWN {
+                    REAL_LMB_DOWN.store(true, Ordering::SeqCst);
+                } else if w_param.0 as u32 == WM_LBUTTONUP {
+                    REAL_LMB_DOWN.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+    unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
+}
 
 struct Feature {
     name: String,
@@ -28,6 +51,7 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
+    autoclicker_active: bool,
 }
 
 impl AppState {
@@ -40,6 +64,7 @@ impl AppState {
                 Feature { name: "Restart".into(), key: None, rdev_key: None, enabled: false, selecting: false },
                 Feature { name: "No Fall Damage".into(), key: None, rdev_key: None, enabled: false, selecting: false },
                 Feature { name: "Shift Toggle".into(), key: None, rdev_key: None, enabled: false, selecting: false },
+                Feature { name: "Auto Clicker".into(), key: None, rdev_key: None, enabled: false, selecting: false },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -47,6 +72,7 @@ impl AppState {
             width: 0,
             height: 0,
             shift_held: false,
+            autoclicker_active: false,
         };
         state.update_screen_position();
         state
@@ -93,37 +119,92 @@ struct KeyBindApp {
 
 impl KeyBindApp {
     fn start_hotkey_listener(state: Arc<Mutex<AppState>>) {
+        // Start the real mouse listener in a separate thread with a message loop
+        thread::spawn(|| {
+            unsafe {
+                let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), HINSTANCE::default(), 0).unwrap();
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                let _ = UnhookWindowsHookEx(hook);
+            }
+        });
+
+        let state_clone_ac = state.clone();
         thread::spawn(move || {
+            loop {
+                let (active, enabled) = {
+                    let s = state_clone_ac.lock().unwrap();
+                    let enabled = s.features.iter().any(|f| f.name == "Auto Clicker" && f.enabled);
+                    (s.autoclicker_active, enabled)
+                };
+
+                if active && enabled {
+                    // Use our global variable that knows if the button is PHYSICALLY pressed
+                    if REAL_LMB_DOWN.load(Ordering::SeqCst) {
+                        send_mouse_click();
+                        thread::sleep(Duration::from_millis(30)); // Small delay between clicks
+                    } else {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                } else {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+
+        let state_clone_hk = state.clone();
+        thread::spawn(move || {
+            // grab is only needed for hotkey processing (Key)
             let callback = move |event: Event| {
+                // If it's a mouse event, just let it pass through to the system
+                if let EventType::ButtonPress(_) | EventType::ButtonRelease(_) | EventType::MouseMove {..} | EventType::Wheel {..} = event.event_type {
+                    return Some(event);
+                }
+
+                // ... remaining hotkey logic ...
+                let s = match state_clone_hk.try_lock() {
+                    Ok(s) => s,
+                    Err(_) => return Some(event),
+                };
+
                 if let EventType::KeyPress(key) = event.event_type {
-                    if let Ok(s) = state.try_lock() {
-                        if let Some(idx) = s.features.iter().position(|f| f.enabled && f.rdev_key == Some(key)) {
-                            let coords = (s.x_offset, s.y_offset, s.width, s.height);
-                            let state_clone = state.clone();
-                            
-                            thread::spawn(move || {
-                                match idx {
-                                    0 => Self::hacking_method_post_message(coords.0, coords.1, coords.2, coords.3),
-                                    1 => Self::hacking_method2(coords.0, coords.1, coords.2, coords.3),
-                                    2 => Self::tips_skip(coords.0, coords.1, coords.2, coords.3),
-                                    3 => Self::restart(coords.0, coords.1, coords.2, coords.3),
-                                    4 => Self::no_fall_damage(),
-                                    5 => {
-                                        let mut s = state_clone.lock().unwrap();
-                                        s.toggle_shift();
-                                    },
-                                    _ => {}
-                                }
-                            });
-                            return None;
+                    if let Some(feature) = s.features.iter().find(|f| f.enabled && f.rdev_key == Some(key)) {
+                        let feature_name = feature.name.clone();
+                        let coords = (s.x_offset, s.y_offset, s.width, s.height);
+                        let state_clone = state_clone_hk.clone();
+
+                        if feature_name == "Auto Clicker" {
+                            drop(s);
+                            let mut s_lock = state_clone.lock().unwrap();
+                            s_lock.autoclicker_active = !s_lock.autoclicker_active;
+                            return None; // Block the bind key itself
                         }
+
+                        thread::spawn(move || {
+                            match feature_name.as_str() {
+                                "Hacking Device (PostMessage)" => Self::hacking_method_post_message(coords.0, coords.1, coords.2, coords.3),
+                                "Hacking Device (PostMessage 2)" => Self::hacking_method2(coords.0, coords.1, coords.2, coords.3),
+                                "Tips Skip" => Self::tips_skip(coords.0, coords.1, coords.2, coords.3),
+                                "Restart" => Self::restart(coords.0, coords.1, coords.2, coords.3),
+                                "No Fall Damage" => Self::no_fall_damage(),
+                                "Shift Toggle" => {
+                                    let mut s = state_clone.lock().unwrap();
+                                    s.toggle_shift();
+                                }
+                                _ => {}
+                            }
+                        });
+                        return None;
                     }
                 }
                 Some(event)
             };
 
             if let Err(error) = grab(callback) {
-                eprintln!("Error: {:?}", error);
+                eprintln!("Error in hotkey listener: {:?}", error);
             }
         });
     }
@@ -251,34 +332,51 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Key Bindings App (Rust OAR Helper)");
-            for i in 0..s.features.len() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{}: ", s.features[i].name));
-                    let key_text = if s.features[i].selecting { "Waiting...".into() } 
-                                   else if let Some(k) = s.features[i].key { format!("{:?}", k) } 
-                                   else { "Select Key".into() };
-                    
-                    if ui.button(key_text).clicked() { s.features[i].selecting = true; }
-                    if ui.button("Reset").clicked() {
-                        if s.features[i].name == "Shift Toggle" { s.release_shift(); }
-                        s.features[i].key = None; s.features[i].enabled = false; s.features[i].selecting = false;
-                    }
+            ui.add_space(10.0);
 
-                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) } 
-                                    else { egui::Color32::from_rgb(150, 0, 0) };
-                    if s.features[i].name == "Shift Toggle" && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
+            egui::Grid::new("features_grid")
+                .num_columns(4)
+                .spacing([20.0, 8.0])
+                .show(ui, |ui| {
+                    for i in 0..s.features.len() {
+                        // 1. Feature Name
+                        ui.label(format!("{}:", s.features[i].name));
 
-                    if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
-                        if s.features[i].key.is_some() {
-                            s.features[i].enabled = !s.features[i].enabled;
-                            if !s.features[i].enabled && s.features[i].name == "Shift Toggle" { s.release_shift(); }
+                        // 2. Select Key Button
+                        let key_text = if s.features[i].selecting { "Waiting...".into() } 
+                                       else if let Some(k) = s.features[i].key { format!("{:?}", k) } 
+                                       else { "Select Key".into() };
+                        
+                        if ui.button(key_text).clicked() { s.features[i].selecting = true; }
+
+                        // 3. Reset Button
+                        if ui.button("Reset").clicked() {
+                            if s.features[i].name == "Shift Toggle" { s.release_shift(); }
+                            s.features[i].key = None; s.features[i].enabled = false; s.features[i].selecting = false;
                         }
+
+                        // 4. Enable/Disable Button
+                        let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) } 
+                                        else { egui::Color32::from_rgb(150, 0, 0) };
+                        if s.features[i].name == "Shift Toggle" && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
+
+                        if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
+                            if s.features[i].key.is_some() {
+                                s.features[i].enabled = !s.features[i].enabled;
+                                if !s.features[i].enabled && s.features[i].name == "Shift Toggle" { s.release_shift(); }
+                            }
+                        }
+
+                        ui.end_row(); // Move to the next row in the grid
                     }
                 });
-            }
+
+            ui.add_space(15.0);
+            ui.separator();
             ui.add_space(10.0);
+
             ui.horizontal(|ui| {
-                ui.label("Monitor ID");
+                ui.label("Monitor ID:");
                 if ui.text_edit_singleline(&mut s.monitor_id).changed() { s.update_screen_position(); }
             });
             ui.add_space(5.0);
@@ -311,19 +409,7 @@ fn send_instant_burst_clicks(count: usize) {
     }
 }
 
-fn send_mouse_clicks(count: usize) {
-    unsafe {
-        for _ in 0..count {
-            let mut inputs = [INPUT::default(); 2];
-            inputs[0].r#type = INPUT_MOUSE;
-            inputs[0].Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-            inputs[1].r#type = INPUT_MOUSE;
-            inputs[1].Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-            let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-            thread::sleep(Duration::from_millis(1));
-        }
-    }
-}
+
 
 fn send_key_tap(scan: u16) {
     unsafe {
@@ -390,7 +476,7 @@ fn egui_to_inputbot_key(key: egui::Key) -> (Option<KeybdKey>, Option<Key>) {
 fn main() -> eframe::Result {
     unsafe { let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 400.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([450.0, 400.0]),
         ..Default::default()
     };
     let state = Arc::new(Mutex::new(AppState::new()));
