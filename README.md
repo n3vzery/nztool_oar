@@ -5,4 +5,5 @@
 * **Restart**
 * **No Fall Damage**
 * **Shift Toggle**
+* **Auto Clicker**
 <img width="450" height="431" alt="nztool_oar_gFWHRwDtsf" src="https://github.com/user-attachments/assets/8ee37bd8-ea05-4b96-b5cc-616e1071c635" />
