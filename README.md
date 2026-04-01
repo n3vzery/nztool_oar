@@ -5,4 +5,4 @@
 * **Restart**
 * **No Fall Damage**
 * **Shift Toggle**
-<img width="418" height="429" alt="image" src="https://github.com/user-attachments/assets/8ccee5f6-e1ad-446b-86a7-7303f21d2758" />
+<img width="450" height="431" alt="nztool_oar_gFWHRwDtsf" src="https://github.com/user-attachments/assets/8ee37bd8-ea05-4b96-b5cc-616e1071c635" />
