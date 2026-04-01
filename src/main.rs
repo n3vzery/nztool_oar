@@ -257,7 +257,9 @@ impl KeyBindApp {
                                 s_mut.toggle_shift();
                             },
                             FeatureId::NoFallDamage => {
-                                Self::no_fall_damage();
+                                thread::spawn(move || {
+                                    Self::no_fall_damage();
+                                });
                             },
                             FeatureId::HackingPostMessage => {
                                 thread::spawn(move || {
@@ -387,9 +389,9 @@ impl KeyBindApp {
     }
 
     fn no_fall_damage() {
-        send_key_tap(0x01);
-        thread::sleep(Duration::from_millis(50));
-        send_key_tap(0x01);
+        send_key_tap(0x01); // ESC
+        thread::sleep(Duration::from_millis(30));
+        send_key_tap(0x01); // ESC
     }
 }
 
