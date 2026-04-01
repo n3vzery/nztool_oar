@@ -1,12 +1,12 @@
 #![windows_subsystem = "windows"]
 
 use eframe::egui;
-use inputbot::KeybdKey;
 use rdev::{grab, Event, EventType, Key};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -15,6 +15,17 @@ use windows::Win32::UI::HiDpi::*;
 
 // Global variable to store the real (physical) state of LMB
 static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
+// Global variable for autoclicker mode to avoid Mutex contention
+static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
+// Thread ID of the mouse hook thread for clean shutdown
+static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+// Helper to pack coordinates into LPARAM safely for PostMessage
+fn pack_lparam(x: i32, y: i32) -> isize {
+    let low = (x as u32 & 0xFFFF) as isize;
+    let high = ((y as u32 & 0xFFFF) << 16) as isize;
+    high | low
+}
 
 unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
     if n_code == HC_ACTION as i32 {
@@ -35,9 +46,20 @@ unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_p
     unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum FeatureId {
+    HackingPostMessage,
+    HackingPostMessage2,
+    TipsSkip,
+    Restart,
+    NoFallDamage,
+    ShiftToggle,
+    AutoClicker,
+}
+
 struct Feature {
+    id: FeatureId,
     name: String,
-    key: Option<KeybdKey>,
     rdev_key: Option<Key>,
     enabled: bool,
     selecting: bool,
@@ -51,20 +73,19 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
-    autoclicker_active: bool,
 }
 
 impl AppState {
     fn new() -> Self {
         let mut state = Self {
             features: vec![
-                Feature { name: "Hacking Device (PostMessage)".into(), key: None, rdev_key: None, enabled: false, selecting: false },
-                Feature { name: "Hacking Device (PostMessage 2)".into(), key: None, rdev_key: None, enabled: false, selecting: false },
-                Feature { name: "Tips Skip".into(), key: None, rdev_key: None, enabled: false, selecting: false },
-                Feature { name: "Restart".into(), key: None, rdev_key: None, enabled: false, selecting: false },
-                Feature { name: "No Fall Damage".into(), key: None, rdev_key: None, enabled: false, selecting: false },
-                Feature { name: "Shift Toggle".into(), key: None, rdev_key: None, enabled: false, selecting: false },
-                Feature { name: "Auto Clicker".into(), key: None, rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::HackingPostMessage, name: "Hacking Device (PostMessage)".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::HackingPostMessage2, name: "Hacking Device (PostMessage 2)".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::TipsSkip, name: "Tips Skip".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::Restart, name: "Restart".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::NoFallDamage, name: "No Fall Damage".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::ShiftToggle, name: "Shift Toggle".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::AutoClicker, name: "Auto Clicker".into(), rdev_key: None, enabled: false, selecting: false },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -72,7 +93,6 @@ impl AppState {
             width: 0,
             height: 0,
             shift_held: false,
-            autoclicker_active: false,
         };
         state.update_screen_position();
         state
@@ -117,11 +137,25 @@ struct KeyBindApp {
     state: Arc<Mutex<AppState>>,
 }
 
+impl Drop for KeyBindApp {
+    fn drop(&mut self) {
+        let thread_id = MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst);
+        if thread_id != 0 {
+            unsafe {
+                let _ = PostThreadMessageA(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+}
+
 impl KeyBindApp {
     fn start_hotkey_listener(state: Arc<Mutex<AppState>>) {
         // Start the real mouse listener in a separate thread with a message loop
         thread::spawn(|| {
             unsafe {
+                // Store current thread ID for clean shutdown
+                MOUSE_HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
+                
                 let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), HINSTANCE::default(), 0).unwrap();
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
@@ -135,11 +169,12 @@ impl KeyBindApp {
         let state_clone_ac = state.clone();
         thread::spawn(move || {
             loop {
-                let (active, enabled) = {
+                // Read the global autoclicker mode and check if the feature is enabled in UI
+                let enabled = {
                     let s = state_clone_ac.lock().unwrap();
-                    let enabled = s.features.iter().any(|f| f.name == "Auto Clicker" && f.enabled);
-                    (s.autoclicker_active, enabled)
+                    s.features.iter().any(|f| f.id == FeatureId::AutoClicker && f.enabled)
                 };
+                let active = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
 
                 if active && enabled {
                     // Use our global variable that knows if the button is PHYSICALLY pressed
@@ -164,39 +199,54 @@ impl KeyBindApp {
                     return Some(event);
                 }
 
-                // ... remaining hotkey logic ...
-                let s = match state_clone_hk.try_lock() {
-                    Ok(s) => s,
-                    Err(_) => return Some(event),
-                };
+                // Block and wait for lock to ensure no hotkey is missed
+                let s = state_clone_hk.lock().unwrap();
 
                 if let EventType::KeyPress(key) = event.event_type {
                     if let Some(feature) = s.features.iter().find(|f| f.enabled && f.rdev_key == Some(key)) {
-                        let feature_name = feature.name.clone();
+                        let feature_id = feature.id;
                         let coords = (s.x_offset, s.y_offset, s.width, s.height);
                         let state_clone = state_clone_hk.clone();
 
-                        if feature_name == "Auto Clicker" {
-                            drop(s);
-                            let mut s_lock = state_clone.lock().unwrap();
-                            s_lock.autoclicker_active = !s_lock.autoclicker_active;
+                        if feature_id == FeatureId::AutoClicker {
+                            // Toggle global atomic variable
+                            let current = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
+                            AUTOCLICKER_ACTIVE.store(!current, Ordering::SeqCst);
                             return None; // Block the bind key itself
                         }
 
-                        thread::spawn(move || {
-                            match feature_name.as_str() {
-                                "Hacking Device (PostMessage)" => Self::hacking_method_post_message(coords.0, coords.1, coords.2, coords.3),
-                                "Hacking Device (PostMessage 2)" => Self::hacking_method2(coords.0, coords.1, coords.2, coords.3),
-                                "Tips Skip" => Self::tips_skip(coords.0, coords.1, coords.2, coords.3),
-                                "Restart" => Self::restart(coords.0, coords.1, coords.2, coords.3),
-                                "No Fall Damage" => Self::no_fall_damage(),
-                                "Shift Toggle" => {
-                                    let mut s = state_clone.lock().unwrap();
-                                    s.toggle_shift();
-                                }
-                                _ => {}
-                            }
-                        });
+                        // Optimization: don't spawn a thread for simple toggle/instant actions
+                        match feature_id {
+                            FeatureId::ShiftToggle => {
+                                drop(s); // release lock before mutable access
+                                let mut s_mut = state_clone.lock().unwrap();
+                                s_mut.toggle_shift();
+                            },
+                            FeatureId::NoFallDamage => {
+                                Self::no_fall_damage();
+                            },
+                            FeatureId::HackingPostMessage => {
+                                thread::spawn(move || {
+                                    Self::hacking_method_post_message(coords.0, coords.1, coords.2, coords.3);
+                                });
+                            },
+                            FeatureId::HackingPostMessage2 => {
+                                thread::spawn(move || {
+                                    Self::hacking_method2(coords.0, coords.1, coords.2, coords.3);
+                                });
+                            },
+                            FeatureId::TipsSkip => {
+                                thread::spawn(move || {
+                                    Self::tips_skip(coords.0, coords.1, coords.2, coords.3);
+                                });
+                            },
+                            FeatureId::Restart => {
+                                thread::spawn(move || {
+                                    Self::restart(coords.0, coords.1, coords.2, coords.3);
+                                });
+                            },
+                            _ => {}
+                        }
                         return None;
                     }
                 }
@@ -209,7 +259,7 @@ impl KeyBindApp {
         });
     }
 
-    fn hacking_method_post_message(_x: i32, _y: i32, _w: i32, _h: i32) {
+    fn hacking_method_post_message(x: i32, y: i32, w: i32, h: i32) {
         unsafe {
             // 1. Wait (DELAY_MS = 50)
             thread::sleep(Duration::from_millis(50));
@@ -221,34 +271,36 @@ impl KeyBindApp {
             }
 
             // 3. Screen center calculation
-            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-            let screen_height = GetSystemMetrics(SM_CYSCREEN);
-            let center_x = screen_width / 2;
-            let center_y = screen_height / 2;
-
-            // 4. Target position (OFFSET_Y = -140)
+            let center_x = x + w / 2;
+            let center_y = y + h / 2;
             let target_x = center_x;
             let target_y = center_y - 140;
 
-            // 5. Instant Move
+            // 4. Convert Screen to Client Coordinates for PostMessage
+            let mut pt = POINT { x: target_x, y: target_y };
+            let _ = ScreenToClient(hwnd, &mut pt);
+
+            // 5. Instant Move (Still screen-relative)
             let _ = SetCursorPos(target_x, target_y);
 
-            // 6. Direct Message Blast
-            let l_param = ((target_y as u32) << 16) | (target_x as u32 & 0xFFFF);
+            // 6. Direct Message Blast (Packed safely)
+            let l_param = pack_lparam(pt.x, pt.y);
             
             // CLICK_COUNT = 100, MK_LBUTTON = 0x0001
+            // Added yield_now to prevent message queue overflow while maintaining high speed
             for _ in 0..100 {
-                let _ = PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param as isize));
-                let _ = PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param as isize));
+                let _ = PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param));
+                let _ = PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param));
+                thread::yield_now(); 
             }
 
             // 7. Move to top and click once
-            let _ = SetCursorPos(center_x, 0);
+            let _ = SetCursorPos(center_x, y);
             send_mouse_click();
         }
     }
 
-    fn hacking_method2(_x: i32, _y: i32, _w: i32, _h: i32) {
+    fn hacking_method2(x: i32, y: i32, w: i32, h: i32) {
         unsafe {
             // 1. Wait (DELAY_MS = 50)
             thread::sleep(Duration::from_millis(50));
@@ -260,25 +312,27 @@ impl KeyBindApp {
             }
 
             // 3. Screen center calculation
-            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-            let screen_height = GetSystemMetrics(SM_CYSCREEN);
-            let center_x = screen_width / 2;
-            let center_y = screen_height / 2;
-
-            // 4. Target position (OFFSET_Y = -140)
+            let center_x = x + w / 2;
+            let center_y = y + h / 2;
             let target_x = center_x;
             let target_y = center_y - 140;
+
+            // 4. Convert Screen to Client Coordinates
+            let mut pt = POINT { x: target_x, y: target_y };
+            let _ = ScreenToClient(hwnd, &mut pt);
 
             // 5. Instant Move
             let _ = SetCursorPos(target_x, target_y);
 
             // 6. Direct Message Blast
-            let l_param = ((target_y as u32) << 16) | (target_x as u32 & 0xFFFF);
+            let l_param = pack_lparam(pt.x, pt.y);
             
             // CLICK_COUNT = 100, MK_LBUTTON = 0x0001
+            // Added yield_now to prevent message queue overflow while maintaining high speed
             for _ in 0..100 {
-                let _ = PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param as isize));
-                let _ = PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param as isize));
+                let _ = PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param));
+                let _ = PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param));
+                thread::yield_now();
             }
 
             // 7. Jump (Space scancode = 0x39)
@@ -316,17 +370,16 @@ impl eframe::App for KeyBindApp {
             });
 
             if let Some(k) = key {
-                if k == egui::Key::Escape {
-                    s.features[idx].selecting = false;
-                } else {
-                    let (kb_key, rd_key) = egui_to_inputbot_key(k);
-                    if kb_key.is_some() || rd_key.is_some() {
-                        s.features[idx].key = kb_key;
-                        s.features[idx].rdev_key = rd_key;
-                        s.features[idx].selecting = false;
+                        if k == egui::Key::Escape {
+                            s.features[idx].selecting = false;
+                        } else {
+                            let rd_key = egui_to_rdev_key(k);
+                            if rd_key.is_some() {
+                                s.features[idx].rdev_key = rd_key;
+                                s.features[idx].selecting = false;
+                            }
+                        }
                     }
-                }
-            }
             ctx.request_repaint();
         }
 
@@ -344,28 +397,28 @@ impl eframe::App for KeyBindApp {
 
                         // 2. Select Key Button
                         let key_text = if s.features[i].selecting { "Waiting...".into() } 
-                                       else if let Some(k) = s.features[i].key { format!("{:?}", k) } 
+                                       else if let Some(k) = s.features[i].rdev_key { format!("{:?}", k) } 
                                        else { "Select Key".into() };
                         
                         if ui.button(key_text).clicked() { s.features[i].selecting = true; }
 
                         // 3. Reset Button
                         if ui.button("Reset").clicked() {
-                            if s.features[i].name == "Shift Toggle" { s.release_shift(); }
-                            s.features[i].key = None; s.features[i].enabled = false; s.features[i].selecting = false;
-                        }
+                        if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                        s.features[i].rdev_key = None; s.features[i].enabled = false; s.features[i].selecting = false;
+                    }
 
-                        // 4. Enable/Disable Button
-                        let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) } 
-                                        else { egui::Color32::from_rgb(150, 0, 0) };
-                        if s.features[i].name == "Shift Toggle" && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
+                    // 4. Enable/Disable Button
+                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) } 
+                                    else { egui::Color32::from_rgb(150, 0, 0) };
+                    if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
 
-                        if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
-                            if s.features[i].key.is_some() {
-                                s.features[i].enabled = !s.features[i].enabled;
-                                if !s.features[i].enabled && s.features[i].name == "Shift Toggle" { s.release_shift(); }
-                            }
+                    if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
+                        if s.features[i].rdev_key.is_some() {
+                            s.features[i].enabled = !s.features[i].enabled;
+                            if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
                         }
+                    }
 
                         ui.end_row(); // Move to the next row in the grid
                     }
@@ -434,42 +487,29 @@ fn send_key_state(scan: u16, down: bool) {
     }
 }
 
-fn egui_to_inputbot_key(key: egui::Key) -> (Option<KeybdKey>, Option<Key>) {
+fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
     use egui::Key::*;
     match key {
-        A => (Some(KeybdKey::AKey), Some(Key::KeyA)), B => (Some(KeybdKey::BKey), Some(Key::KeyB)),
-        C => (Some(KeybdKey::CKey), Some(Key::KeyC)), D => (Some(KeybdKey::DKey), Some(Key::KeyD)),
-        E => (Some(KeybdKey::EKey), Some(Key::KeyE)), F => (Some(KeybdKey::FKey), Some(Key::KeyF)),
-        G => (Some(KeybdKey::GKey), Some(Key::KeyG)), H => (Some(KeybdKey::HKey), Some(Key::KeyH)),
-        I => (Some(KeybdKey::IKey), Some(Key::KeyI)), J => (Some(KeybdKey::JKey), Some(Key::KeyJ)),
-        K => (Some(KeybdKey::KKey), Some(Key::KeyK)), L => (Some(KeybdKey::LKey), Some(Key::KeyL)),
-        M => (Some(KeybdKey::MKey), Some(Key::KeyM)), N => (Some(KeybdKey::NKey), Some(Key::KeyN)),
-        O => (Some(KeybdKey::OKey), Some(Key::KeyO)), P => (Some(KeybdKey::PKey), Some(Key::KeyP)),
-        Q => (Some(KeybdKey::QKey), Some(Key::KeyQ)), R => (Some(KeybdKey::RKey), Some(Key::KeyR)),
-        S => (Some(KeybdKey::SKey), Some(Key::KeyS)), T => (Some(KeybdKey::TKey), Some(Key::KeyT)),
-        U => (Some(KeybdKey::UKey), Some(Key::KeyU)), V => (Some(KeybdKey::VKey), Some(Key::KeyV)),
-        W => (Some(KeybdKey::WKey), Some(Key::KeyW)), X => (Some(KeybdKey::XKey), Some(Key::KeyX)),
-        Y => (Some(KeybdKey::YKey), Some(Key::KeyY)), Z => (Some(KeybdKey::ZKey), Some(Key::KeyZ)),
-        Num0 => (Some(KeybdKey::Numrow0Key), Some(Key::Num0)), Num1 => (Some(KeybdKey::Numrow1Key), Some(Key::Num1)),
-        Num2 => (Some(KeybdKey::Numrow2Key), Some(Key::Num2)), Num3 => (Some(KeybdKey::Numrow3Key), Some(Key::Num3)),
-        Num4 => (Some(KeybdKey::Numrow4Key), Some(Key::Num4)), Num5 => (Some(KeybdKey::Numrow5Key), Some(Key::Num5)),
-        Num6 => (Some(KeybdKey::Numrow6Key), Some(Key::Num6)), Num7 => (Some(KeybdKey::Numrow7Key), Some(Key::Num7)),
-        Num8 => (Some(KeybdKey::Numrow8Key), Some(Key::Num8)), Num9 => (Some(KeybdKey::Numrow9Key), Some(Key::Num9)),
-        F1 => (Some(KeybdKey::F1Key), Some(Key::F1)), F2 => (Some(KeybdKey::F2Key), Some(Key::F2)),
-        F3 => (Some(KeybdKey::F3Key), Some(Key::F3)), F4 => (Some(KeybdKey::F4Key), Some(Key::F4)),
-        F5 => (Some(KeybdKey::F5Key), Some(Key::F5)), F6 => (Some(KeybdKey::F6Key), Some(Key::F6)),
-        F7 => (Some(KeybdKey::F7Key), Some(Key::F7)), F8 => (Some(KeybdKey::F8Key), Some(Key::F8)),
-        F9 => (Some(KeybdKey::F9Key), Some(Key::F9)), F10 => (Some(KeybdKey::F10Key), Some(Key::F10)),
-        F11 => (Some(KeybdKey::F11Key), Some(Key::F11)), F12 => (Some(KeybdKey::F12Key), Some(Key::F12)),
-        Space => (Some(KeybdKey::SpaceKey), Some(Key::Space)), Enter => (Some(KeybdKey::EnterKey), Some(Key::Return)),
-        Escape => (Some(KeybdKey::EscapeKey), Some(Key::Escape)), Tab => (Some(KeybdKey::TabKey), Some(Key::Tab)),
-        Backspace => (Some(KeybdKey::BackspaceKey), Some(Key::Backspace)), Insert => (Some(KeybdKey::InsertKey), Some(Key::Insert)),
-        Delete => (Some(KeybdKey::DeleteKey), Some(Key::Delete)), Home => (Some(KeybdKey::HomeKey), Some(Key::Home)),
-        End => (Some(KeybdKey::EndKey), Some(Key::End)), PageUp => (Some(KeybdKey::PageUpKey), Some(Key::PageUp)),
-        PageDown => (Some(KeybdKey::PageDownKey), Some(Key::PageDown)), ArrowUp => (Some(KeybdKey::UpKey), Some(Key::UpArrow)),
-        ArrowDown => (Some(KeybdKey::DownKey), Some(Key::DownArrow)), ArrowLeft => (Some(KeybdKey::LeftKey), Some(Key::LeftArrow)),
-        ArrowRight => (Some(KeybdKey::RightKey), Some(Key::RightArrow)),
-        _ => (None, None),
+        A => Some(Key::KeyA), B => Some(Key::KeyB), C => Some(Key::KeyC), D => Some(Key::KeyD),
+        E => Some(Key::KeyE), F => Some(Key::KeyF), G => Some(Key::KeyG), H => Some(Key::KeyH),
+        I => Some(Key::KeyI), J => Some(Key::KeyJ), K => Some(Key::KeyK), L => Some(Key::KeyL),
+        M => Some(Key::KeyM), N => Some(Key::KeyN), O => Some(Key::KeyO), P => Some(Key::KeyP),
+        Q => Some(Key::KeyQ), R => Some(Key::KeyR), S => Some(Key::KeyS), T => Some(Key::KeyT),
+        U => Some(Key::KeyU), V => Some(Key::KeyV), W => Some(Key::KeyW), X => Some(Key::KeyX),
+        Y => Some(Key::KeyY), Z => Some(Key::KeyZ),
+        Num0 => Some(Key::Num0), Num1 => Some(Key::Num1), Num2 => Some(Key::Num2), Num3 => Some(Key::Num3),
+        Num4 => Some(Key::Num4), Num5 => Some(Key::Num5), Num6 => Some(Key::Num6), Num7 => Some(Key::Num7),
+        Num8 => Some(Key::Num8), Num9 => Some(Key::Num9),
+        F1 => Some(Key::F1), F2 => Some(Key::F2), F3 => Some(Key::F3), F4 => Some(Key::F4),
+        F5 => Some(Key::F5), F6 => Some(Key::F6), F7 => Some(Key::F7), F8 => Some(Key::F8),
+        F9 => Some(Key::F9), F10 => Some(Key::F10), F11 => Some(Key::F11), F12 => Some(Key::F12),
+        Space => Some(Key::Space), Enter => Some(Key::Return), Escape => Some(Key::Escape),
+        Tab => Some(Key::Tab), Backspace => Some(Key::Backspace), Insert => Some(Key::Insert),
+        Delete => Some(Key::Delete), Home => Some(Key::Home), End => Some(Key::End),
+        PageUp => Some(Key::PageUp), PageDown => Some(Key::PageDown),
+        ArrowUp => Some(Key::UpArrow), ArrowDown => Some(Key::DownArrow),
+        ArrowLeft => Some(Key::LeftArrow), ArrowRight => Some(Key::RightArrow),
+        _ => None,
     }
 }
 
