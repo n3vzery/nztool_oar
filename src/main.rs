@@ -545,7 +545,6 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
         PageUp => Some(Key::PageUp), PageDown => Some(Key::PageDown),
         ArrowUp => Some(Key::UpArrow), ArrowDown => Some(Key::DownArrow),
         ArrowLeft => Some(Key::LeftArrow), ArrowRight => Some(Key::RightArrow),
-        Alt => Some(Key::Alt),
         _ => None,
     }
 }
