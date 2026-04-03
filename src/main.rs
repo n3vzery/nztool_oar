@@ -545,6 +545,7 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
         PageUp => Some(Key::PageUp), PageDown => Some(Key::PageDown),
         ArrowUp => Some(Key::UpArrow), ArrowDown => Some(Key::DownArrow),
         ArrowLeft => Some(Key::LeftArrow), ArrowRight => Some(Key::RightArrow),
+        Alt => Some(Key::Alt),
         _ => None,
     }
 }
@@ -570,6 +571,7 @@ fn rdev_key_to_name(key: Key) -> String {
         Delete => "Delete".to_string(), Home => "Home".to_string(), End => "End".to_string(),
         PageUp => "PageUp".to_string(), PageDown => "PageDown".to_string(),
         UpArrow => "↑".to_string(), DownArrow => "↓".to_string(), LeftArrow => "←".to_string(), RightArrow => "→".to_string(),
+        Alt => "Alt".to_string(), ControlLeft => "Ctrl".to_string(), ControlRight => "Ctrl".to_string(), ShiftLeft => "Shift".to_string(), ShiftRight => "Shift".to_string(),
         _ => format!("{:?}", key),
     }
 }
