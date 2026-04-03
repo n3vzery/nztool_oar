@@ -60,7 +60,7 @@ unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_p
     if n_code == HC_ACTION as i32 {
         unsafe {
             let ms_ll = *(l_param.0 as *const MSLLHOOKSTRUCT);
-            
+
             // LLMHF_INJECTED (0x01) means the event was generated programmatically (SendInput).
             // We ignore such events to prevent self-triggering.
             if (ms_ll.flags & LLMHF_INJECTED) == 0 {
@@ -184,7 +184,7 @@ impl KeyBindApp {
             unsafe {
                 // Store current thread ID for clean shutdown
                 MOUSE_HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
-                
+
                 let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), HINSTANCE::default(), 0).unwrap();
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
@@ -321,13 +321,13 @@ impl KeyBindApp {
 
             // 6. Direct Message Blast (Packed safely)
             let l_param = pack_lparam(pt.x, pt.y);
-            
+
             // CLICK_COUNT = 100, MK_LBUTTON = 0x0001
             // Added yield_now to prevent message queue overflow while maintaining high speed
             for _ in 0..100 {
                 let _ = PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param));
                 let _ = PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param));
-                thread::yield_now(); 
+                thread::yield_now();
             }
 
             // 7. Move to top and click once
@@ -362,7 +362,7 @@ impl KeyBindApp {
 
             // 6. Direct Message Blast
             let l_param = pack_lparam(pt.x, pt.y);
-            
+
             // CLICK_COUNT = 100, MK_LBUTTON = 0x0001
             // Added yield_now to prevent message queue overflow while maintaining high speed
             for _ in 0..100 {
@@ -432,10 +432,10 @@ impl eframe::App for KeyBindApp {
                         ui.label(format!("{}:", s.features[i].name));
 
                         // 2. Select Key Button
-                        let key_text = if s.features[i].selecting { "Waiting...".into() } 
-                                       else if let Some(k) = s.features[i].rdev_key { format!("{:?}", k) } 
+                        let key_text = if s.features[i].selecting { "Waiting...".into() }
+                                       else if let Some(k) = s.features[i].rdev_key { rdev_key_to_name(k) }
                                        else { "Select Key".into() };
-                        
+
                         if ui.button(key_text).clicked() { s.features[i].selecting = true; }
 
                         // 3. Reset Button
@@ -445,7 +445,7 @@ impl eframe::App for KeyBindApp {
                     }
 
                     // 4. Enable/Disable Button
-                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) } 
+                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
                                     else { egui::Color32::from_rgb(150, 0, 0) };
                     if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
 
@@ -492,7 +492,7 @@ fn send_instant_burst_clicks(count: usize) {
         up.Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTUP;
         inputs.push(up);
     }
-    
+
     unsafe {
         let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     }
@@ -546,6 +546,32 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
         ArrowUp => Some(Key::UpArrow), ArrowDown => Some(Key::DownArrow),
         ArrowLeft => Some(Key::LeftArrow), ArrowRight => Some(Key::RightArrow),
         _ => None,
+    }
+}
+
+fn rdev_key_to_name(key: Key) -> String {
+    use Key::*;
+    match key {
+        KeyA => "A".to_string(), KeyB => "B".to_string(), KeyC => "C".to_string(), KeyD => "D".to_string(),
+        KeyE => "E".to_string(), KeyF => "F".to_string(), KeyG => "G".to_string(), KeyH => "H".to_string(),
+        KeyI => "I".to_string(), KeyJ => "J".to_string(), KeyK => "K".to_string(), KeyL => "L".to_string(),
+        KeyM => "M".to_string(), KeyN => "N".to_string(), KeyO => "O".to_string(), KeyP => "P".to_string(),
+        KeyQ => "Q".to_string(), KeyR => "R".to_string(), KeyS => "S".to_string(), KeyT => "T".to_string(),
+        KeyU => "U".to_string(), KeyV => "V".to_string(), KeyW => "W".to_string(), KeyX => "X".to_string(),
+        KeyY => "Y".to_string(), KeyZ => "Z".to_string(),
+        Num0 => "0".to_string(), Num1 => "1".to_string(), Num2 => "2".to_string(), Num3 => "3".to_string(),
+        Num4 => "4".to_string(), Num5 => "5".to_string(), Num6 => "6".to_string(), Num7 => "7".to_string(),
+        Num8 => "8".to_string(), Num9 => "9".to_string(),
+        F1 => "F1".to_string(), F2 => "F2".to_string(), F3 => "F3".to_string(), F4 => "F4".to_string(),
+        F5 => "F5".to_string(), F6 => "F6".to_string(), F7 => "F7".to_string(), F8 => "F8".to_string(),
+        F9 => "F9".to_string(), F10 => "F10".to_string(), F11 => "F11".to_string(), F12 => "F12".to_string(),
+        Space => "Space".to_string(), Return => "Enter".to_string(), Escape => "Escape".to_string(),
+        Tab => "Tab".to_string(), Backspace => "Backspace".to_string(), Insert => "Insert".to_string(),
+        Delete => "Delete".to_string(), Home => "Home".to_string(), End => "End".to_string(),
+        PageUp => "PageUp".to_string(), PageDown => "PageDown".to_string(),
+        UpArrow => "↑".to_string(), DownArrow => "↓".to_string(), LeftArrow => "←".to_string(), RightArrow => "→".to_string(),
+        Alt => "Alt".to_string(), ControlLeft => "Ctrl".to_string(), ControlRight => "Ctrl".to_string(), ShiftLeft => "Shift".to_string(), ShiftRight => "Shift".to_string(),
+        _ => format!("{:?}", key),
     }
 }
 
