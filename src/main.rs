@@ -552,26 +552,26 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
 fn rdev_key_to_name(key: Key) -> String {
     use Key::*;
     match key {
-        KeyA => "A", KeyB => "B", KeyC => "C", KeyD => "D",
-        KeyE => "E", KeyF => "F", KeyG => "G", KeyH => "H",
-        KeyI => "I", KeyJ => "J", KeyK => "K", KeyL => "L",
-        KeyM => "M", KeyN => "N", KeyO => "O", KeyP => "P",
-        KeyQ => "Q", KeyR => "R", KeyS => "S", KeyT => "T",
-        KeyU => "U", KeyV => "V", KeyW => "W", KeyX => "X",
-        KeyY => "Y", KeyZ => "Z",
-        Num0 => "0", Num1 => "1", Num2 => "2", Num3 => "3",
-        Num4 => "4", Num5 => "5", Num6 => "6", Num7 => "7",
-        Num8 => "8", Num9 => "9",
-        F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4",
-        F5 => "F5", F6 => "F6", F7 => "F7", F8 => "F8",
-        F9 => "F9", F10 => "F10", F11 => "F11", F12 => "F12",
-        Space => "Space", Return => "Enter", Escape => "Escape",
-        Tab => "Tab", Backspace => "Backspace", Insert => "Insert",
-        Delete => "Delete", Home => "Home", End => "End",
-        PageUp => "PageUp", PageDown => "PageDown",
-        UpArrow => "↑", DownArrow => "↓", LeftArrow => "←", RightArrow => "→",
+        KeyA => "A".to_string(), KeyB => "B".to_string(), KeyC => "C".to_string(), KeyD => "D".to_string(),
+        KeyE => "E".to_string(), KeyF => "F".to_string(), KeyG => "G".to_string(), KeyH => "H".to_string(),
+        KeyI => "I".to_string(), KeyJ => "J".to_string(), KeyK => "K".to_string(), KeyL => "L".to_string(),
+        KeyM => "M".to_string(), KeyN => "N".to_string(), KeyO => "O".to_string(), KeyP => "P".to_string(),
+        KeyQ => "Q".to_string(), KeyR => "R".to_string(), KeyS => "S".to_string(), KeyT => "T".to_string(),
+        KeyU => "U".to_string(), KeyV => "V".to_string(), KeyW => "W".to_string(), KeyX => "X".to_string(),
+        KeyY => "Y".to_string(), KeyZ => "Z".to_string(),
+        Num0 => "0".to_string(), Num1 => "1".to_string(), Num2 => "2".to_string(), Num3 => "3".to_string(),
+        Num4 => "4".to_string(), Num5 => "5".to_string(), Num6 => "6".to_string(), Num7 => "7".to_string(),
+        Num8 => "8".to_string(), Num9 => "9".to_string(),
+        F1 => "F1".to_string(), F2 => "F2".to_string(), F3 => "F3".to_string(), F4 => "F4".to_string(),
+        F5 => "F5".to_string(), F6 => "F6".to_string(), F7 => "F7".to_string(), F8 => "F8".to_string(),
+        F9 => "F9".to_string(), F10 => "F10".to_string(), F11 => "F11".to_string(), F12 => "F12".to_string(),
+        Space => "Space".to_string(), Return => "Enter".to_string(), Escape => "Escape".to_string(),
+        Tab => "Tab".to_string(), Backspace => "Backspace".to_string(), Insert => "Insert".to_string(),
+        Delete => "Delete".to_string(), Home => "Home".to_string(), End => "End".to_string(),
+        PageUp => "PageUp".to_string(), PageDown => "PageDown".to_string(),
+        UpArrow => "↑".to_string(), DownArrow => "↓".to_string(), LeftArrow => "←".to_string(), RightArrow => "→".to_string(),
         _ => format!("{:?}", key),
-    }.to_string()
+    }
 }
 
 fn main() -> eframe::Result {
