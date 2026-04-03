@@ -84,6 +84,7 @@ enum FeatureId {
     NoFallDamage,
     ShiftToggle,
     AutoClicker,
+    GrabNoGun,
 }
 
 struct Feature {
@@ -115,6 +116,7 @@ impl AppState {
                 Feature { id: FeatureId::NoFallDamage, name: "No Fall Damage".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::ShiftToggle, name: "Shift Toggle".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::AutoClicker, name: "Auto Clicker".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::GrabNoGun, name: "Grab No Gun".into(), rdev_key: None, enabled: false, selecting: false },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -281,6 +283,11 @@ impl KeyBindApp {
                                     Self::restart(coords.0, coords.1, coords.2, coords.3);
                                 });
                             },
+                            FeatureId::GrabNoGun => {
+                                thread::spawn(move || {
+                                    Self::grab_no_gun();
+                                });
+                            },
                             _ => {}
                         }
                         return None;
@@ -392,6 +399,23 @@ impl KeyBindApp {
         send_key_tap(0x01); // ESC
         thread::sleep(Duration::from_millis(30));
         send_key_tap(0x01); // ESC
+    }
+
+    fn grab_no_gun() {
+        unsafe {
+            // Scroll wheel up (WHEEL_DELTA = 120)
+            let mut wheel_input = INPUT::default();
+            wheel_input.r#type = INPUT_MOUSE;
+            wheel_input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
+            wheel_input.Anonymous.mi.mouseData = 120;
+            let _ = SendInput(&[wheel_input], std::mem::size_of::<INPUT>() as i32);
+
+            // Small delay before mouse click
+            thread::sleep(Duration::from_millis(10));
+
+            // Single left mouse click
+            send_mouse_click();
+        }
     }
 }
 
