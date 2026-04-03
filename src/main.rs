@@ -433,7 +433,7 @@ impl eframe::App for KeyBindApp {
 
                         // 2. Select Key Button
                         let key_text = if s.features[i].selecting { "Waiting...".into() }
-                                       else if let Some(k) = s.features[i].rdev_key { format!("{:?}", k) }
+                                       else if let Some(k) = s.features[i].rdev_key { rdev_key_to_name(k) }
                                        else { "Select Key".into() };
 
                         if ui.button(key_text).clicked() { s.features[i].selecting = true; }
@@ -547,6 +547,31 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
         ArrowLeft => Some(Key::LeftArrow), ArrowRight => Some(Key::RightArrow),
         _ => None,
     }
+}
+
+fn rdev_key_to_name(key: Key) -> String {
+    use Key::*;
+    match key {
+        KeyA => "A", KeyB => "B", KeyC => "C", KeyD => "D",
+        KeyE => "E", KeyF => "F", KeyG => "G", KeyH => "H",
+        KeyI => "I", KeyJ => "J", KeyK => "K", KeyL => "L",
+        KeyM => "M", KeyN => "N", KeyO => "O", KeyP => "P",
+        KeyQ => "Q", KeyR => "R", KeyS => "S", KeyT => "T",
+        KeyU => "U", KeyV => "V", KeyW => "W", KeyX => "X",
+        KeyY => "Y", KeyZ => "Z",
+        Num0 => "0", Num1 => "1", Num2 => "2", Num3 => "3",
+        Num4 => "4", Num5 => "5", Num6 => "6", Num7 => "7",
+        Num8 => "8", Num9 => "9",
+        F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4",
+        F5 => "F5", F6 => "F6", F7 => "F7", F8 => "F8",
+        F9 => "F9", F10 => "F10", F11 => "F11", F12 => "F12",
+        Space => "Space", Return => "Enter", Escape => "Escape",
+        Tab => "Tab", Backspace => "Backspace", Insert => "Insert",
+        Delete => "Delete", Home => "Home", End => "End",
+        PageUp => "PageUp", PageDown => "PageDown",
+        UpArrow => "↑", DownArrow => "↓", LeftArrow => "←", RightArrow => "→",
+        _ => format!("{:?}", key),
+    }.to_string()
 }
 
 fn main() -> eframe::Result {
