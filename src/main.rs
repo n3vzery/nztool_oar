@@ -84,6 +84,7 @@ enum FeatureId {
     NoFallDamage,
     ShiftToggle,
     AutoClicker,
+    GrabNoGun,
 }
 
 struct Feature {
@@ -115,6 +116,7 @@ impl AppState {
                 Feature { id: FeatureId::NoFallDamage, name: "No Fall Damage".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::ShiftToggle, name: "Shift Toggle".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::AutoClicker, name: "Auto Clicker".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::GrabNoGun, name: "Grab No Gun".into(), rdev_key: None, enabled: false, selecting: false },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -249,12 +251,14 @@ impl KeyBindApp {
                             return None; // Block the bind key itself
                         }
 
-                        // Optimization: don't spawn a thread for simple toggle/instant actions
+                        // Offload all feature logic to separate threads to avoid blocking the rdev hook thread.
+                        // Blocking the hook thread or calling SendInput synchronously can cause hangs/deadlocks.
                         match feature_id {
                             FeatureId::ShiftToggle => {
-                                drop(s); // release lock before mutable access
-                                let mut s_mut = state_clone.lock().unwrap();
-                                s_mut.toggle_shift();
+                                drop(s);
+                                thread::spawn(move || {
+                                    state_clone.lock().unwrap().toggle_shift();
+                                });
                             },
                             FeatureId::NoFallDamage => {
                                 thread::spawn(move || {
@@ -279,6 +283,11 @@ impl KeyBindApp {
                             FeatureId::Restart => {
                                 thread::spawn(move || {
                                     Self::restart(coords.0, coords.1, coords.2, coords.3);
+                                });
+                            },
+                            FeatureId::GrabNoGun => {
+                                thread::spawn(move || {
+                                    Self::grab_no_gun();
                                 });
                             },
                             _ => {}
@@ -392,6 +401,23 @@ impl KeyBindApp {
         send_key_tap(0x01); // ESC
         thread::sleep(Duration::from_millis(30));
         send_key_tap(0x01); // ESC
+    }
+
+    fn grab_no_gun() {
+        unsafe {
+            // Scroll wheel up (WHEEL_DELTA = 120)
+            let mut wheel_input = INPUT::default();
+            wheel_input.r#type = INPUT_MOUSE;
+            wheel_input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
+            wheel_input.Anonymous.mi.mouseData = 120;
+            let _ = SendInput(&[wheel_input], std::mem::size_of::<INPUT>() as i32);
+
+            // Small delay before mouse click
+            thread::sleep(Duration::from_millis(10));
+
+            // Single left mouse click
+            send_mouse_click();
+        }
     }
 }
 
