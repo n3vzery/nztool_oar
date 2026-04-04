@@ -6,4 +6,5 @@
 * **No Fall Damage**
 * **Shift Toggle**
 * **Auto Clicker**
-<img width="450" height="431" alt="nztool_oar_gFWHRwDtsf" src="https://github.com/user-attachments/assets/8ee37bd8-ea05-4b96-b5cc-616e1071c635" />
+<img width="450" height="431" alt="image" src="https://github.com/user-attachments/assets/4c9180bd-1c03-4226-9ca8-a5c60ade48d7" />
+
