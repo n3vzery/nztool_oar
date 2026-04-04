@@ -251,12 +251,14 @@ impl KeyBindApp {
                             return None; // Block the bind key itself
                         }
 
-                        // Optimization: don't spawn a thread for simple toggle/instant actions
+                        // Offload all feature logic to separate threads to avoid blocking the rdev hook thread.
+                        // Blocking the hook thread or calling SendInput synchronously can cause hangs/deadlocks.
                         match feature_id {
                             FeatureId::ShiftToggle => {
-                                drop(s); // release lock before mutable access
-                                let mut s_mut = state_clone.lock().unwrap();
-                                s_mut.toggle_shift();
+                                drop(s);
+                                thread::spawn(move || {
+                                    state_clone.lock().unwrap().toggle_shift();
+                                });
                             },
                             FeatureId::NoFallDamage => {
                                 thread::spawn(move || {
