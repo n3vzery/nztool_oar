@@ -351,6 +351,11 @@ impl AppState {
     fn load_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = get_config_path();
 
+        // Create directory if it doesn't exist (in case config file doesn't exist yet)
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
         // Return Ok if file doesn't exist (use defaults)
         if !config_path.exists() {
             return Ok(());
