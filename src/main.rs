@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
+use serde::{Serialize, Deserialize};
 use windows::Win32::System::Threading::*;
 use windows::Win32::System::ProcessStatus::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -87,6 +88,20 @@ enum FeatureId {
     GrabNoGun,
 }
 
+// Serializable structure for config file
+#[derive(Serialize, Deserialize, Clone)]
+struct SerializableConfig {
+    monitor_id: String,
+    features: Vec<SerializableFeature>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SerializableFeature {
+    id: String,
+    rdev_key: Option<String>,
+    enabled: bool,
+}
+
 struct Feature {
     id: FeatureId,
     name: String,
@@ -103,6 +118,268 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
+}
+
+// Get the path to the config directory and file
+fn get_config_path() -> std::path::PathBuf {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    let config_dir = std::path::PathBuf::from(appdata).join("nzconfig");
+    let config_file = config_dir.join("config.json");
+    config_file
+}
+
+// Convert FeatureId to string and back
+fn feature_id_to_string(id: FeatureId) -> &'static str {
+    match id {
+        FeatureId::HackingPostMessage => "HackingPostMessage",
+        FeatureId::HackingPostMessage2 => "HackingPostMessage2",
+        FeatureId::TipsSkip => "TipsSkip",
+        FeatureId::Restart => "Restart",
+        FeatureId::NoFallDamage => "NoFallDamage",
+        FeatureId::ShiftToggle => "ShiftToggle",
+        FeatureId::AutoClicker => "AutoClicker",
+        FeatureId::GrabNoGun => "GrabNoGun",
+    }
+}
+
+fn string_to_feature_id(s: &str) -> Option<FeatureId> {
+    match s {
+        "HackingPostMessage" => Some(FeatureId::HackingPostMessage),
+        "HackingPostMessage2" => Some(FeatureId::HackingPostMessage2),
+        "TipsSkip" => Some(FeatureId::TipsSkip),
+        "Restart" => Some(FeatureId::Restart),
+        "NoFallDamage" => Some(FeatureId::NoFallDamage),
+        "ShiftToggle" => Some(FeatureId::ShiftToggle),
+        "AutoClicker" => Some(FeatureId::AutoClicker),
+        "GrabNoGun" => Some(FeatureId::GrabNoGun),
+        _ => None,
+    }
+}
+
+// Convert rdev::Key to string representation
+fn key_to_string(key: Key) -> String {
+    match key {
+        Key::KeyA => "KeyA".to_string(),
+        Key::KeyB => "KeyB".to_string(),
+        Key::KeyC => "KeyC".to_string(),
+        Key::KeyD => "KeyD".to_string(),
+        Key::KeyE => "KeyE".to_string(),
+        Key::KeyF => "KeyF".to_string(),
+        Key::KeyG => "KeyG".to_string(),
+        Key::KeyH => "KeyH".to_string(),
+        Key::KeyI => "KeyI".to_string(),
+        Key::KeyJ => "KeyJ".to_string(),
+        Key::KeyK => "KeyK".to_string(),
+        Key::KeyL => "KeyL".to_string(),
+        Key::KeyM => "KeyM".to_string(),
+        Key::KeyN => "KeyN".to_string(),
+        Key::KeyO => "KeyO".to_string(),
+        Key::KeyP => "KeyP".to_string(),
+        Key::KeyQ => "KeyQ".to_string(),
+        Key::KeyR => "KeyR".to_string(),
+        Key::KeyS => "KeyS".to_string(),
+        Key::KeyT => "KeyT".to_string(),
+        Key::KeyU => "KeyU".to_string(),
+        Key::KeyV => "KeyV".to_string(),
+        Key::KeyW => "KeyW".to_string(),
+        Key::KeyX => "KeyX".to_string(),
+        Key::KeyY => "KeyY".to_string(),
+        Key::KeyZ => "KeyZ".to_string(),
+        Key::Num0 => "Num0".to_string(),
+        Key::Num1 => "Num1".to_string(),
+        Key::Num2 => "Num2".to_string(),
+        Key::Num3 => "Num3".to_string(),
+        Key::Num4 => "Num4".to_string(),
+        Key::Num5 => "Num5".to_string(),
+        Key::Num6 => "Num6".to_string(),
+        Key::Num7 => "Num7".to_string(),
+        Key::Num8 => "Num8".to_string(),
+        Key::Num9 => "Num9".to_string(),
+        Key::F1 => "F1".to_string(),
+        Key::F2 => "F2".to_string(),
+        Key::F3 => "F3".to_string(),
+        Key::F4 => "F4".to_string(),
+        Key::F5 => "F5".to_string(),
+        Key::F6 => "F6".to_string(),
+        Key::F7 => "F7".to_string(),
+        Key::F8 => "F8".to_string(),
+        Key::F9 => "F9".to_string(),
+        Key::F10 => "F10".to_string(),
+        Key::F11 => "F11".to_string(),
+        Key::F12 => "F12".to_string(),
+        Key::Space => "Space".to_string(),
+        Key::Return => "Return".to_string(),
+        Key::Escape => "Escape".to_string(),
+        Key::Tab => "Tab".to_string(),
+        Key::Backspace => "Backspace".to_string(),
+        Key::Insert => "Insert".to_string(),
+        Key::Delete => "Delete".to_string(),
+        Key::Home => "Home".to_string(),
+        Key::End => "End".to_string(),
+        Key::PageUp => "PageUp".to_string(),
+        Key::PageDown => "PageDown".to_string(),
+        Key::UpArrow => "UpArrow".to_string(),
+        Key::DownArrow => "DownArrow".to_string(),
+        Key::LeftArrow => "LeftArrow".to_string(),
+        Key::RightArrow => "RightArrow".to_string(),
+        Key::Alt => "Alt".to_string(),
+        Key::ControlLeft => "ControlLeft".to_string(),
+        Key::ControlRight => "ControlRight".to_string(),
+        Key::ShiftLeft => "ShiftLeft".to_string(),
+        Key::ShiftRight => "ShiftRight".to_string(),
+        Key::MetaLeft => "MetaLeft".to_string(),
+        Key::MetaRight => "MetaRight".to_string(),
+        Key::CapsLock => "CapsLock".to_string(),
+        Key::NumLock => "NumLock".to_string(),
+        Key::ScrollLock => "ScrollLock".to_string(),
+        _ => format!("{:?}", key),
+    }
+}
+
+// Convert string to rdev::Key
+fn string_to_key(s: &str) -> Option<Key> {
+    match s {
+        "KeyA" => Some(Key::KeyA),
+        "KeyB" => Some(Key::KeyB),
+        "KeyC" => Some(Key::KeyC),
+        "KeyD" => Some(Key::KeyD),
+        "KeyE" => Some(Key::KeyE),
+        "KeyF" => Some(Key::KeyF),
+        "KeyG" => Some(Key::KeyG),
+        "KeyH" => Some(Key::KeyH),
+        "KeyI" => Some(Key::KeyI),
+        "KeyJ" => Some(Key::KeyJ),
+        "KeyK" => Some(Key::KeyK),
+        "KeyL" => Some(Key::KeyL),
+        "KeyM" => Some(Key::KeyM),
+        "KeyN" => Some(Key::KeyN),
+        "KeyO" => Some(Key::KeyO),
+        "KeyP" => Some(Key::KeyP),
+        "KeyQ" => Some(Key::KeyQ),
+        "KeyR" => Some(Key::KeyR),
+        "KeyS" => Some(Key::KeyS),
+        "KeyT" => Some(Key::KeyT),
+        "KeyU" => Some(Key::KeyU),
+        "KeyV" => Some(Key::KeyV),
+        "KeyW" => Some(Key::KeyW),
+        "KeyX" => Some(Key::KeyX),
+        "KeyY" => Some(Key::KeyY),
+        "KeyZ" => Some(Key::KeyZ),
+        "Num0" => Some(Key::Num0),
+        "Num1" => Some(Key::Num1),
+        "Num2" => Some(Key::Num2),
+        "Num3" => Some(Key::Num3),
+        "Num4" => Some(Key::Num4),
+        "Num5" => Some(Key::Num5),
+        "Num6" => Some(Key::Num6),
+        "Num7" => Some(Key::Num7),
+        "Num8" => Some(Key::Num8),
+        "Num9" => Some(Key::Num9),
+        "F1" => Some(Key::F1),
+        "F2" => Some(Key::F2),
+        "F3" => Some(Key::F3),
+        "F4" => Some(Key::F4),
+        "F5" => Some(Key::F5),
+        "F6" => Some(Key::F6),
+        "F7" => Some(Key::F7),
+        "F8" => Some(Key::F8),
+        "F9" => Some(Key::F9),
+        "F10" => Some(Key::F10),
+        "F11" => Some(Key::F11),
+        "F12" => Some(Key::F12),
+        "Space" => Some(Key::Space),
+        "Return" => Some(Key::Return),
+        "Escape" => Some(Key::Escape),
+        "Tab" => Some(Key::Tab),
+        "Backspace" => Some(Key::Backspace),
+        "Insert" => Some(Key::Insert),
+        "Delete" => Some(Key::Delete),
+        "Home" => Some(Key::Home),
+        "End" => Some(Key::End),
+        "PageUp" => Some(Key::PageUp),
+        "PageDown" => Some(Key::PageDown),
+        "UpArrow" => Some(Key::UpArrow),
+        "DownArrow" => Some(Key::DownArrow),
+        "LeftArrow" => Some(Key::LeftArrow),
+        "RightArrow" => Some(Key::RightArrow),
+        "Alt" => Some(Key::Alt),
+        "ControlLeft" => Some(Key::ControlLeft),
+        "ControlRight" => Some(Key::ControlRight),
+        "ShiftLeft" => Some(Key::ShiftLeft),
+        "ShiftRight" => Some(Key::ShiftRight),
+        "MetaLeft" => Some(Key::MetaLeft),
+        "MetaRight" => Some(Key::MetaRight),
+        "CapsLock" => Some(Key::CapsLock),
+        "NumLock" => Some(Key::NumLock),
+        "ScrollLock" => Some(Key::ScrollLock),
+        _ => None,
+    }
+}
+
+impl AppState {
+    // Save configuration to JSON file
+    fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = get_config_path();
+
+        // Create directory if it doesn't exist
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Create serializable config
+        let features: Vec<SerializableFeature> = self.features.iter()
+            .map(|f| SerializableFeature {
+                id: feature_id_to_string(f.id).to_string(),
+                rdev_key: f.rdev_key.as_ref().map(|k| key_to_string(*k)),
+                enabled: f.enabled,
+            })
+            .collect();
+
+        let config = SerializableConfig {
+            monitor_id: self.monitor_id.clone(),
+            features,
+        };
+
+        // Write to file with pretty formatting
+        let json = serde_json::to_string_pretty(&config)?;
+        std::fs::write(&config_path, json)?;
+
+        Ok(())
+    }
+
+    // Load configuration from JSON file
+    fn load_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = get_config_path();
+
+        // Create directory if it doesn't exist (in case config file doesn't exist yet)
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Return Ok if file doesn't exist (use defaults)
+        if !config_path.exists() {
+            return Ok(());
+        }
+
+        // Read and parse JSON
+        let json = std::fs::read_to_string(&config_path)?;
+        let config: SerializableConfig = serde_json::from_str(&json)?;
+
+        // Load monitor_id
+        self.monitor_id = config.monitor_id;
+
+        // Load features
+        for sf in config.features {
+            if let Some(feature_id) = string_to_feature_id(&sf.id) {
+                if let Some(feature) = self.features.iter_mut().find(|f| f.id == feature_id) {
+                    feature.rdev_key = sf.rdev_key.as_ref().and_then(|k| string_to_key(k));
+                    feature.enabled = sf.enabled;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl AppState {
@@ -126,6 +403,12 @@ impl AppState {
             shift_held: false,
         };
         state.update_screen_position();
+
+        // Load config from file if it exists
+        if let Err(e) = Self::load_config(&mut state) {
+            eprintln!("Failed to load config: {}", e);
+        }
+
         state
     }
 
@@ -439,6 +722,8 @@ impl eframe::App for KeyBindApp {
                             if rd_key.is_some() {
                                 s.features[idx].rdev_key = rd_key;
                                 s.features[idx].selecting = false;
+                                // Save config when key is set
+                                let _ = s.save_config();
                             }
                         }
                     }
@@ -468,6 +753,8 @@ impl eframe::App for KeyBindApp {
                         if ui.button("Reset").clicked() {
                         if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
                         s.features[i].rdev_key = None; s.features[i].enabled = false; s.features[i].selecting = false;
+                        // Save config when reset
+                        let _ = s.save_config();
                     }
 
                     // 4. Enable/Disable Button
@@ -479,6 +766,8 @@ impl eframe::App for KeyBindApp {
                         if s.features[i].rdev_key.is_some() {
                             s.features[i].enabled = !s.features[i].enabled;
                             if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                            // Save config when enable/disable state changes
+                            let _ = s.save_config();
                         }
                     }
 
@@ -492,7 +781,11 @@ impl eframe::App for KeyBindApp {
 
             ui.horizontal(|ui| {
                 ui.label("Monitor ID:");
-                if ui.text_edit_singleline(&mut s.monitor_id).changed() { s.update_screen_position(); }
+                if ui.text_edit_singleline(&mut s.monitor_id).changed() {
+                    s.update_screen_position();
+                    // Save config when monitor_id changes
+                    let _ = s.save_config();
+                }
             });
             ui.add_space(5.0);
             ui.label(format!("Monitor Pos: {}x{}, Size: {}x{}", s.x_offset, s.y_offset, s.width, s.height));
