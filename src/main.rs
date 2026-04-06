@@ -90,7 +90,7 @@ unsafe extern "system" fn low_level_keyboard_proc(n_code: i32, w_param: WPARAM, 
             
             // LLKHF_INJECTED (0x01) means the event was generated programmatically (SendInput).
             // We ignore such events to prevent self-triggering.
-            if (kb_ll.flags & LLKHF_INJECTED) == 0 {
+            if !kb_ll.flags.contains(LLKHF_INJECTED) {
                 // Space scancode is 0x39
                 if kb_ll.scanCode == 0x39 {
                     if w_param.0 as u32 == WM_KEYDOWN || w_param.0 as u32 == WM_SYSKEYDOWN {
