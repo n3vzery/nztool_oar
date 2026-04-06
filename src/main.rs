@@ -116,6 +116,7 @@ enum FeatureId {
     AutoClicker,
     GrabNoGun,
     Bhop,
+    HoldItemBug,
 }
 
 // Serializable structure for config file
@@ -170,6 +171,7 @@ fn feature_id_to_string(id: FeatureId) -> &'static str {
         FeatureId::AutoClicker => "AutoClicker",
         FeatureId::GrabNoGun => "GrabNoGun",
         FeatureId::Bhop => "Bhop",
+        FeatureId::HoldItemBug => "HoldItemBug",
     }
 }
 
@@ -184,6 +186,7 @@ fn string_to_feature_id(s: &str) -> Option<FeatureId> {
         "AutoClicker" => Some(FeatureId::AutoClicker),
         "GrabNoGun" => Some(FeatureId::GrabNoGun),
         "Bhop" => Some(FeatureId::Bhop),
+        "HoldItemBug" => Some(FeatureId::HoldItemBug),
         _ => None,
     }
 }
@@ -427,6 +430,7 @@ impl AppState {
                 Feature { id: FeatureId::AutoClicker, name: "Auto Clicker".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::GrabNoGun, name: "Grab No Gun".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::Bhop, name: "Bhop".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::HoldItemBug, name: "Hold Item Bug".into(), rdev_key: None, enabled: false, selecting: false },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -658,6 +662,11 @@ impl KeyBindApp {
                                     Self::grab_no_gun();
                                 });
                             },
+                            FeatureId::HoldItemBug => {
+                                thread::spawn(move || {
+                                    Self::hold_item_bug();
+                                });
+                            },
                             _ => {}
                         }
                         return None;
@@ -786,6 +795,16 @@ impl KeyBindApp {
             // Single left mouse click
             send_mouse_click();
         }
+    }
+
+    fn hold_item_bug() {
+        send_mouse_state(true);
+        thread::sleep(Duration::from_millis(7));
+        send_key_tap(0x01);
+        thread::sleep(Duration::from_millis(7));
+        send_mouse_state(false);
+        thread::sleep(Duration::from_millis(7));
+        send_key_tap(0x01);
     }
 }
 
@@ -923,6 +942,15 @@ fn send_key_state(scan: u16, down: bool) {
         input.r#type = INPUT_KEYBOARD;
         input.Anonymous.ki.wScan = scan;
         input.Anonymous.ki.dwFlags = if down { KEYEVENTF_SCANCODE } else { KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP };
+        let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+fn send_mouse_state(down: bool) {
+    unsafe {
+        let mut input = INPUT::default();
+        input.r#type = INPUT_MOUSE;
+        input.Anonymous.mi.dwFlags = if down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP };
         let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
     }
 }
