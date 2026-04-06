@@ -19,6 +19,8 @@ use windows::Win32::UI::HiDpi::*;
 static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
 // Global variable for autoclicker mode to avoid Mutex contention
 static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
+// Global variable for bhop mode
+static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Thread ID of the mouse hook thread for clean shutdown
 static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -86,6 +88,7 @@ enum FeatureId {
     ShiftToggle,
     AutoClicker,
     GrabNoGun,
+    Bhop,
 }
 
 // Serializable structure for config file
@@ -139,6 +142,7 @@ fn feature_id_to_string(id: FeatureId) -> &'static str {
         FeatureId::ShiftToggle => "ShiftToggle",
         FeatureId::AutoClicker => "AutoClicker",
         FeatureId::GrabNoGun => "GrabNoGun",
+        FeatureId::Bhop => "Bhop",
     }
 }
 
@@ -152,6 +156,7 @@ fn string_to_feature_id(s: &str) -> Option<FeatureId> {
         "ShiftToggle" => Some(FeatureId::ShiftToggle),
         "AutoClicker" => Some(FeatureId::AutoClicker),
         "GrabNoGun" => Some(FeatureId::GrabNoGun),
+        "Bhop" => Some(FeatureId::Bhop),
         _ => None,
     }
 }
@@ -394,6 +399,7 @@ impl AppState {
                 Feature { id: FeatureId::ShiftToggle, name: "Shift Toggle".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::AutoClicker, name: "Auto Clicker".into(), rdev_key: None, enabled: false, selecting: false },
                 Feature { id: FeatureId::GrabNoGun, name: "Grab No Gun".into(), rdev_key: None, enabled: false, selecting: false },
+                Feature { id: FeatureId::Bhop, name: "Bhop".into(), rdev_key: None, enabled: false, selecting: false },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -504,6 +510,28 @@ impl KeyBindApp {
             }
         });
 
+        let state_clone_bhop = state.clone();
+        thread::spawn(move || {
+            loop {
+                let enabled = {
+                    let s = state_clone_bhop.lock().unwrap();
+                    s.features.iter().any(|f| f.id == FeatureId::Bhop && f.enabled)
+                };
+                let active = BHOP_ACTIVE.load(Ordering::SeqCst);
+
+                if active && enabled && is_game_focused() {
+                    if REAL_LMB_DOWN.load(Ordering::SeqCst) {
+                        send_key_tap(0x39); // Space scancode
+                        thread::sleep(Duration::from_millis(15)); // Small delay between jumps
+                    } else {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                } else {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+
         let state_clone_hk = state.clone();
         thread::spawn(move || {
             // grab is only needed for hotkey processing (Key)
@@ -531,6 +559,13 @@ impl KeyBindApp {
                             // Toggle global atomic variable
                             let current = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
                             AUTOCLICKER_ACTIVE.store(!current, Ordering::SeqCst);
+                            return None; // Block the bind key itself
+                        }
+
+                        if feature_id == FeatureId::Bhop {
+                            // Toggle global atomic variable
+                            let current = BHOP_ACTIVE.load(Ordering::SeqCst);
+                            BHOP_ACTIVE.store(!current, Ordering::SeqCst);
                             return None; // Block the bind key itself
                         }
 
@@ -761,6 +796,7 @@ impl eframe::App for KeyBindApp {
                     let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
                                     else { egui::Color32::from_rgb(150, 0, 0) };
                     if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
+                    if s.features[i].id == FeatureId::Bhop && s.features[i].enabled && BHOP_ACTIVE.load(Ordering::SeqCst) { color = egui::Color32::from_rgb(0, 100, 200); }
 
                     if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
                         if s.features[i].rdev_key.is_some() {
@@ -790,6 +826,7 @@ impl eframe::App for KeyBindApp {
             ui.add_space(5.0);
             ui.label(format!("Monitor Pos: {}x{}, Size: {}x{}", s.x_offset, s.y_offset, s.width, s.height));
             if s.shift_held { ui.colored_label(egui::Color32::LIGHT_BLUE, "SHIFT IS CURRENTLY HELD"); }
+            if BHOP_ACTIVE.load(Ordering::SeqCst) { ui.colored_label(egui::Color32::from_rgb(0, 100, 200), "BHOP IS ACTIVE"); }
         });
     }
 }
