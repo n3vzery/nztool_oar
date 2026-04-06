@@ -17,12 +17,16 @@ use windows::Win32::UI::HiDpi::*;
 
 // Global variable to store the real (physical) state of LMB
 static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
+// Global variable to store the real (physical) state of Space
+static REAL_SPACE_DOWN: AtomicBool = AtomicBool::new(false);
 // Global variable for autoclicker mode to avoid Mutex contention
 static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Global variable for bhop mode
 static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Thread ID of the mouse hook thread for clean shutdown
 static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+// Thread ID of the keyboard hook thread for clean shutdown
+static KEYBOARD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 // Helper to check if the game window is currently focused
 fn is_game_focused() -> bool {
@@ -71,6 +75,29 @@ unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_p
                     REAL_LMB_DOWN.store(true, Ordering::SeqCst);
                 } else if w_param.0 as u32 == WM_LBUTTONUP {
                     REAL_LMB_DOWN.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+    unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
+}
+
+// Low level keyboard proc to track physical Space key presses
+unsafe extern "system" fn low_level_keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    if n_code == HC_ACTION as i32 {
+        unsafe {
+            let kb_ll = *(l_param.0 as *const KBDLLHOOKSTRUCT);
+            
+            // LLHF_INJECTED (0x01) means the event was generated programmatically (SendInput).
+            // We ignore such events to prevent self-triggering.
+            if (kb_ll.flags & LLHF_INJECTED) == 0 {
+                // Space scancode is 0x39
+                if kb_ll.scanCode == 0x39 {
+                    if w_param.0 as u32 == WM_KEYDOWN || w_param.0 as u32 == WM_SYSKEYDOWN {
+                        REAL_SPACE_DOWN.store(true, Ordering::SeqCst);
+                    } else if w_param.0 as u32 == WM_KEYUP || w_param.0 as u32 == WM_SYSKEYUP {
+                        REAL_SPACE_DOWN.store(false, Ordering::SeqCst);
+                    }
                 }
             }
         }
@@ -459,10 +486,16 @@ struct KeyBindApp {
 
 impl Drop for KeyBindApp {
     fn drop(&mut self) {
-        let thread_id = MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst);
-        if thread_id != 0 {
+        let mouse_thread_id = MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst);
+        if mouse_thread_id != 0 {
             unsafe {
-                let _ = PostThreadMessageA(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+                let _ = PostThreadMessageA(mouse_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+        let keyboard_thread_id = KEYBOARD_HOOK_THREAD_ID.load(Ordering::SeqCst);
+        if keyboard_thread_id != 0 {
+            unsafe {
+                let _ = PostThreadMessageA(keyboard_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
             }
         }
     }
@@ -477,6 +510,22 @@ impl KeyBindApp {
                 MOUSE_HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
 
                 let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), HINSTANCE::default(), 0).unwrap();
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                let _ = UnhookWindowsHookEx(hook);
+            }
+        });
+
+        // Start the real keyboard listener in a separate thread with a message loop for Space key tracking
+        thread::spawn(|| {
+            unsafe {
+                // Store current thread ID for clean shutdown
+                KEYBOARD_HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
+
+                let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), HINSTANCE::default(), 0).unwrap();
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
                     let _ = TranslateMessage(&msg);
@@ -520,7 +569,8 @@ impl KeyBindApp {
                 let active = BHOP_ACTIVE.load(Ordering::SeqCst);
 
                 if active && enabled && is_game_focused() {
-                    if REAL_LMB_DOWN.load(Ordering::SeqCst) {
+                    // Use REAL_SPACE_DOWN to check if Space is physically pressed
+                    if REAL_SPACE_DOWN.load(Ordering::SeqCst) {
                         send_key_tap(0x39); // Space scancode
                         thread::sleep(Duration::from_millis(15)); // Small delay between jumps
                     } else {
