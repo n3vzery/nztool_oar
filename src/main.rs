@@ -846,7 +846,6 @@ impl eframe::App for KeyBindApp {
                     let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
                                     else { egui::Color32::from_rgb(150, 0, 0) };
                     if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
-                    if s.features[i].id == FeatureId::Bhop && s.features[i].enabled && BHOP_ACTIVE.load(Ordering::SeqCst) { color = egui::Color32::from_rgb(0, 100, 200); }
 
                     if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
                         if s.features[i].rdev_key.is_some() {
@@ -876,7 +875,6 @@ impl eframe::App for KeyBindApp {
             ui.add_space(5.0);
             ui.label(format!("Monitor Pos: {}x{}, Size: {}x{}", s.x_offset, s.y_offset, s.width, s.height));
             if s.shift_held { ui.colored_label(egui::Color32::LIGHT_BLUE, "SHIFT IS CURRENTLY HELD"); }
-            if BHOP_ACTIVE.load(Ordering::SeqCst) { ui.colored_label(egui::Color32::from_rgb(0, 100, 200), "BHOP IS ACTIVE"); }
         });
     }
 }
