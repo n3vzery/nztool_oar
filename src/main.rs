@@ -127,7 +127,20 @@ struct SerializableConfig {
     auto_clicker_delay: u32,
     position_x: i32,
     position_y: i32,
+    #[serde(default = "default_tips_skip_y")]
+    tips_skip_y_offset: i32,
+    #[serde(default = "default_restart_y")]
+    restart_y_offset: i32,
+    #[serde(default = "default_hacking_y")]
+    hacking_y_offset: i32,
+    #[serde(default = "default_hacking2_y")]
+    hacking2_y_offset: i32,
 }
+
+fn default_tips_skip_y() -> i32 { 810 } // 1080 * 0.75
+fn default_restart_y() -> i32 { 486 }    // 1080 * 0.45
+fn default_hacking_y() -> i32 { -140 }
+fn default_hacking2_y() -> i32 { -140 }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableFeature {
@@ -155,6 +168,10 @@ struct AppState {
     auto_clicker_delay: u32,
     position_x: i32,
     position_y: i32,
+    tips_skip_y_offset: i32,
+    restart_y_offset: i32,
+    hacking_y_offset: i32,
+    hacking2_y_offset: i32,
 }
 
 // Get the path to the config directory and file
@@ -382,6 +399,10 @@ impl AppState {
             auto_clicker_delay: self.auto_clicker_delay,
             position_x: self.position_x,
             position_y: self.position_y,
+            tips_skip_y_offset: self.tips_skip_y_offset,
+            restart_y_offset: self.restart_y_offset,
+            hacking_y_offset: self.hacking_y_offset,
+            hacking2_y_offset: self.hacking2_y_offset,
         };
 
         // Write to file with pretty formatting
@@ -426,6 +447,10 @@ impl AppState {
         self.auto_clicker_delay = config.auto_clicker_delay;
         self.position_x = config.position_x;
         self.position_y = config.position_y;
+        self.tips_skip_y_offset = config.tips_skip_y_offset;
+        self.restart_y_offset = config.restart_y_offset;
+        self.hacking_y_offset = config.hacking_y_offset;
+        self.hacking2_y_offset = config.hacking2_y_offset;
 
         Ok(())
     }
@@ -455,6 +480,10 @@ impl AppState {
             auto_clicker_delay: 6,
             position_x: 0,
             position_y: 0,
+            tips_skip_y_offset: 810,
+            restart_y_offset: 486,
+            hacking_y_offset: -140,
+            hacking2_y_offset: -140,
         };
         state.update_screen_position();
 
@@ -617,7 +646,14 @@ impl KeyBindApp {
                 if let EventType::KeyPress(key) = event.event_type {
                     if let Some(feature) = s.features.iter().find(|f| f.enabled && f.rdev_key == Some(key)) {
                         let feature_id = feature.id;
-                        let coords = (s.x_offset, s.y_offset, s.width, s.height);
+                        let x = s.x_offset;
+                        let y = s.y_offset;
+                        let w = s.width;
+                        let h = s.height;
+                        let tips_y = s.tips_skip_y_offset;
+                        let restart_y = s.restart_y_offset;
+                        let hack_y = s.hacking_y_offset;
+                        let hack2_y = s.hacking2_y_offset;
                         let state_clone = state_clone_hk.clone();
 
                         if feature_id == FeatureId::AutoClicker {
@@ -650,22 +686,22 @@ impl KeyBindApp {
                             },
                             FeatureId::HackingPostMessage => {
                                 thread::spawn(move || {
-                                    Self::hacking_method_post_message(coords.0, coords.1, coords.2, coords.3);
+                                    Self::hacking_method_post_message(x, y, w, h, hack_y);
                                 });
                             },
                             FeatureId::HackingPostMessage2 => {
                                 thread::spawn(move || {
-                                    Self::hacking_method2(coords.0, coords.1, coords.2, coords.3);
+                                    Self::hacking_method2(x, y, w, h, hack2_y);
                                 });
                             },
                             FeatureId::TipsSkip => {
                                 thread::spawn(move || {
-                                    Self::tips_skip(coords.0, coords.1, coords.2, coords.3);
+                                    Self::tips_skip(x, w, y + tips_y);
                                 });
                             },
                             FeatureId::Restart => {
                                 thread::spawn(move || {
-                                    Self::restart(coords.0, coords.1, coords.2, coords.3);
+                                    Self::restart(x, w, y + restart_y);
                                 });
                             },
                             FeatureId::GrabNoGun => {
@@ -692,7 +728,7 @@ impl KeyBindApp {
         });
     }
 
-    fn hacking_method_post_message(x: i32, y: i32, w: i32, h: i32) {
+    fn hacking_method_post_message(x: i32, y: i32, w: i32, h: i32, offset_y: i32) {
         unsafe {
             // 1. Wait (DELAY_MS = 50)
             thread::sleep(Duration::from_millis(50));
@@ -707,7 +743,7 @@ impl KeyBindApp {
             let center_x = x + w / 2;
             let center_y = y + h / 2;
             let target_x = center_x;
-            let target_y = center_y - 140;
+            let target_y = center_y + offset_y;
 
             // 4. Convert Screen to Client Coordinates for PostMessage
             let mut pt = POINT { x: target_x, y: target_y };
@@ -733,7 +769,7 @@ impl KeyBindApp {
         }
     }
 
-    fn hacking_method2(x: i32, y: i32, w: i32, h: i32) {
+    fn hacking_method2(x: i32, y: i32, w: i32, h: i32, offset_y: i32) {
         unsafe {
             // 1. Wait (DELAY_MS = 50)
             thread::sleep(Duration::from_millis(50));
@@ -748,7 +784,7 @@ impl KeyBindApp {
             let center_x = x + w / 2;
             let center_y = y + h / 2;
             let target_x = center_x;
-            let target_y = center_y - 140;
+            let target_y = center_y + offset_y;
 
             // 4. Convert Screen to Client Coordinates
             let mut pt = POINT { x: target_x, y: target_y };
@@ -773,15 +809,15 @@ impl KeyBindApp {
         }
     }
 
-    fn tips_skip(x: i32, y: i32, w: i32, h: i32) {
-        move_mouse(x + w / 2, y + (h as f32 * 0.75) as i32);
+    fn tips_skip(x: i32, w: i32, y_abs: i32) {
+        move_mouse(x + w / 2, y_abs);
         send_mouse_click();
     }
 
-    fn restart(x: i32, y: i32, w: i32, h: i32) {
+    fn restart(x: i32, w: i32, y_abs: i32) {
         send_key_tap(0x01);
         thread::sleep(Duration::from_millis(100));
-        move_mouse(x + w / 2, y + (h as f32 * 0.45) as i32);
+        move_mouse(x + w / 2, y_abs);
         send_mouse_click();
     }
 
@@ -849,132 +885,105 @@ impl eframe::App for KeyBindApp {
             ui.heading("Key Bindings App (Rust OAR Helper)");
             ui.add_space(10.0);
 
-            // Two-column layout: Features (left) | Screen Editor (right)
-            ui.horizontal(|ui| {
-                // Left column - Features with CollapsingHeaders
-                ui.vertical(|ui| {
-                    ui.heading("Features");
-                    ui.add_space(5.0);
+            let mut save_needed = false;
+            {
+                let AppState { features, auto_clicker_delay, shift_held, .. } = &mut *s;
 
-                    let mut save_needed = false;
-                    {
-                        let AppState { features, auto_clicker_delay, shift_held, .. } = &mut *s;
-
-                        for feature in features.iter_mut() {
-                            let id = feature.id;
-                            let name = feature.name.clone();
-                            let enabled = feature.enabled;
-                            let selecting = feature.selecting;
-                            let rdev_key = feature.rdev_key;
-
-                            let header_text = format!("{} [{}]", name, if enabled { "enabled" } else { "disabled" });
-
-                            egui::CollapsingHeader::new(header_text)
-                                .show(ui, |ui| {
-                                    ui.add_space(5.0);
-
-                                    // Select Key button
-                                    ui.horizontal(|ui| {
-                                        ui.label("Select Key: ");
-                                        let key_text = if selecting { "Waiting...".into() }
-                                                       else if let Some(k) = rdev_key { rdev_key_to_name(k) }
-                                                       else { "None".into() };
-
-                                        if ui.button(key_text).clicked() {
-                                            feature.selecting = true;
-                                        }
-
-                                        if ui.button("Reset").clicked() {
-                                            if id == FeatureId::ShiftToggle && *shift_held {
-                                                *shift_held = false;
-                                                send_key_state(0x2A, false);
-                                            }
-                                            feature.rdev_key = None;
-                                            feature.enabled = false;
-                                            feature.selecting = false;
-                                            save_needed = true;
-                                        }
-                                    });
-
-                                    ui.add_space(5.0);
-
-                                    // Enable/Disable button
-                                    ui.horizontal(|ui| {
-                                        let mut color = if feature.enabled { egui::Color32::from_rgb(0, 150, 0) }
-                                                        else { egui::Color32::from_rgb(150, 0, 0) };
-                                        if id == FeatureId::ShiftToggle && *shift_held && feature.enabled { color = egui::Color32::BLUE; }
-
-                                        if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
-                                            if feature.rdev_key.is_some() {
-                                                feature.enabled = !feature.enabled;
-                                                if !feature.enabled && id == FeatureId::ShiftToggle && *shift_held {
-                                                    *shift_held = false;
-                                                    send_key_state(0x2A, false);
-                                                }
-                                                save_needed = true;
-                                            }
-                                        }
-                                    });
-
-                                    // Auto Clicker delay slider
-                                    if id == FeatureId::AutoClicker {
-                                        ui.add_space(8.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label("Delay: ");
-                                            if ui.add(egui::Slider::new(auto_clicker_delay, 1..=50)).changed() {
-                                                save_needed = true;
-                                            }
-                                            ui.label(format!(" {}ms", *auto_clicker_delay));
-                                        });
-                                    }
-
-                                    ui.add_space(5.0);
-                                });
-                        }
-                    }
-                    if save_needed {
-                        let _ = s.save_config();
-                    }
-                });
-
-                // Right column - Screen Editor
-                ui.vertical(|ui| {
-                    ui.heading("Screen Editor");
-                    ui.add_space(5.0);
-
-                    ui.label("Position X:");
-                    ui.add(egui::DragValue::new(&mut s.position_x).speed(1.0));
-                    ui.add_space(5.0);
-
-                    ui.label("Position Y:");
-                    ui.add(egui::DragValue::new(&mut s.position_y).speed(1.0));
-                    ui.add_space(10.0);
+                for feature in features.iter_mut() {
+                    let id = feature.id;
+                    let name = feature.name.clone();
+                    let enabled = feature.enabled;
+                    let selecting = feature.selecting;
+                    let rdev_key = feature.rdev_key;
 
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            // Get current mouse position
-                            unsafe {
-                                let mut pt = POINT { x: 0, y: 0 };
-                                if GetCursorPos(&mut pt).is_ok() {
-                                    s.position_x = pt.x;
-                                    s.position_y = pt.y;
-                                    let _ = s.save_config();
+                        ui.label(format!("{}:", name));
+                        
+                        let key_text = if selecting { "Waiting...".into() }
+                                       else if let Some(k) = rdev_key { rdev_key_to_name(k) }
+                                       else { "None".into() };
+
+                        if ui.button(key_text).clicked() {
+                            feature.selecting = true;
+                        }
+
+                        let mut color = if feature.enabled { egui::Color32::from_rgb(0, 150, 0) }
+                                        else { egui::Color32::from_rgb(150, 0, 0) };
+                        if id == FeatureId::ShiftToggle && *shift_held && feature.enabled { color = egui::Color32::BLUE; }
+
+                        if ui.add(egui::Button::new("Toggle").fill(color)).clicked() {
+                            if feature.rdev_key.is_some() {
+                                feature.enabled = !feature.enabled;
+                                if !feature.enabled && id == FeatureId::ShiftToggle && *shift_held {
+                                    *shift_held = false;
+                                    send_key_state(0x2A, false);
                                 }
+                                save_needed = true;
                             }
                         }
-                        if ui.button("Load").clicked() {
-                            // Move mouse to saved position
-                            move_mouse(s.position_x, s.position_y);
+
+                        if ui.button("Reset").clicked() {
+                            if id == FeatureId::ShiftToggle && *shift_held {
+                                *shift_held = false;
+                                send_key_state(0x2A, false);
+                            }
+                            feature.rdev_key = None;
+                            feature.enabled = false;
+                            feature.selecting = false;
+                            save_needed = true;
                         }
-                        if ui.button("Clear").clicked() {
-                            s.position_x = 0;
-                            s.position_y = 0;
-                            let _ = s.save_config();
+
+                        if id == FeatureId::AutoClicker {
+                            ui.label("Delay:");
+                            if ui.add(egui::Slider::new(auto_clicker_delay, 1..=50)).changed() {
+                                save_needed = true;
+                            }
                         }
                     });
+                }
+            }
 
-                    ui.add_space(10.0);
-                    ui.label(format!("Saved: X={}, Y={}", s.position_x, s.position_y));
+            ui.add_space(15.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            // Screen Editor at the bottom
+            ui.heading("Screen Editor");
+            ui.add_space(5.0);
+
+            egui::CollapsingHeader::new("Tips Skip Settings").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Y offset:");
+                    if ui.add(egui::DragValue::new(&mut s.tips_skip_y_offset).speed(1.0)).changed() {
+                        save_needed = true;
+                    }
+                });
+            });
+
+            egui::CollapsingHeader::new("Restart Settings").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Y offset:");
+                    if ui.add(egui::DragValue::new(&mut s.restart_y_offset).speed(1.0)).changed() {
+                        save_needed = true;
+                    }
+                });
+            });
+
+            egui::CollapsingHeader::new("Hacking Device (PostMessage) Settings").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Y offset:");
+                    if ui.add(egui::DragValue::new(&mut s.hacking_y_offset).speed(1.0)).changed() {
+                        save_needed = true;
+                    }
+                });
+            });
+
+            egui::CollapsingHeader::new("Hacking Device (PostMessage 2) Settings").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Y offset:");
+                    if ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0)).changed() {
+                        save_needed = true;
+                    }
                 });
             });
 
@@ -986,13 +995,15 @@ impl eframe::App for KeyBindApp {
                 ui.label("Monitor ID:");
                 if ui.text_edit_singleline(&mut s.monitor_id).changed() {
                     s.update_screen_position();
-                    // Save config when monitor_id changes
-                    let _ = s.save_config();
+                    save_needed = true;
                 }
             });
-            ui.add_space(5.0);
             ui.label(format!("Monitor Pos: {}x{}, Size: {}x{}", s.x_offset, s.y_offset, s.width, s.height));
             if s.shift_held { ui.colored_label(egui::Color32::LIGHT_BLUE, "SHIFT IS CURRENTLY HELD"); }
+
+            if save_needed {
+                let _ = s.save_config();
+            }
         });
     }
 }
