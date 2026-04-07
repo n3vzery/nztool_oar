@@ -124,6 +124,9 @@ enum FeatureId {
 struct SerializableConfig {
     monitor_id: String,
     features: Vec<SerializableFeature>,
+    auto_clicker_delay: u32,
+    position_x: i32,
+    position_y: i32,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -149,6 +152,9 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
+    auto_clicker_delay: u32,
+    position_x: i32,
+    position_y: i32,
 }
 
 // Get the path to the config directory and file
@@ -373,6 +379,9 @@ impl AppState {
         let config = SerializableConfig {
             monitor_id: self.monitor_id.clone(),
             features,
+            auto_clicker_delay: self.auto_clicker_delay,
+            position_x: self.position_x,
+            position_y: self.position_y,
         };
 
         // Write to file with pretty formatting
@@ -413,6 +422,11 @@ impl AppState {
             }
         }
 
+        // Load auto_clicker_delay and position values
+        self.auto_clicker_delay = config.auto_clicker_delay;
+        self.position_x = config.position_x;
+        self.position_y = config.position_y;
+
         Ok(())
     }
 }
@@ -438,6 +452,9 @@ impl AppState {
             width: 0,
             height: 0,
             shift_held: false,
+            auto_clicker_delay: 6,
+            position_x: 0,
+            position_y: 0,
         };
         state.update_screen_position();
 
@@ -543,9 +560,10 @@ impl KeyBindApp {
         thread::spawn(move || {
             loop {
                 // Read the global autoclicker mode and check if the feature is enabled in UI
-                let enabled = {
+                let (enabled, delay_ms) = {
                     let s = state_clone_ac.lock().unwrap();
-                    s.features.iter().any(|f| f.id == FeatureId::AutoClicker && f.enabled)
+                    let enabled = s.features.iter().any(|f| f.id == FeatureId::AutoClicker && f.enabled);
+                    (enabled, s.auto_clicker_delay)
                 };
                 let active = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
 
@@ -553,7 +571,7 @@ impl KeyBindApp {
                     // Use our global variable that knows if the button is PHYSICALLY pressed
                     if REAL_LMB_DOWN.load(Ordering::SeqCst) {
                         send_mouse_click();
-                        thread::sleep(Duration::from_millis(30)); // Small delay between clicks
+                        thread::sleep(Duration::from_millis(delay_ms as u64));
                     } else {
                         thread::sleep(Duration::from_millis(5));
                     }
@@ -838,46 +856,106 @@ impl eframe::App for KeyBindApp {
             ui.heading("Key Bindings App (Rust OAR Helper)");
             ui.add_space(10.0);
 
-            egui::Grid::new("features_grid")
-                .num_columns(4)
-                .spacing([20.0, 8.0])
-                .show(ui, |ui| {
-                    for i in 0..s.features.len() {
-                        // 1. Feature Name
-                        ui.label(format!("{}:", s.features[i].name));
+            // Two-column layout: Features (left) | Screen Editor (right)
+            ui.horizontal(|ui| {
+                // Left column - Features
+                ui.vertical(|ui| {
+                    ui.heading("Features");
+                    ui.add_space(5.0);
 
-                        // 2. Select Key Button
-                        let key_text = if s.features[i].selecting { "Waiting...".into() }
-                                       else if let Some(k) = s.features[i].rdev_key { rdev_key_to_name(k) }
-                                       else { "Select Key".into() };
+                    egui::Grid::new("features_grid")
+                        .num_columns(4)
+                        .spacing([20.0, 8.0])
+                        .show(ui, |ui| {
+                            for i in 0..s.features.len() {
+                                // 1. Feature Name
+                                ui.label(format!("{}:", s.features[i].name));
 
-                        if ui.button(key_text).clicked() { s.features[i].selecting = true; }
+                                // 2. Select Key Button
+                                let key_text = if s.features[i].selecting { "Waiting...".into() }
+                                               else if let Some(k) = s.features[i].rdev_key { rdev_key_to_name(k) }
+                                               else { "Select Key".into() };
 
-                        // 3. Reset Button
-                        if ui.button("Reset").clicked() {
-                        if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
-                        s.features[i].rdev_key = None; s.features[i].enabled = false; s.features[i].selecting = false;
-                        // Save config when reset
-                        let _ = s.save_config();
-                    }
+                                if ui.button(key_text).clicked() { s.features[i].selecting = true; }
 
-                    // 4. Enable/Disable Button
-                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
-                                    else { egui::Color32::from_rgb(150, 0, 0) };
-                    if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
+                                // 3. Reset Button
+                                if ui.button("Reset").clicked() {
+                                    if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                                    s.features[i].rdev_key = None; s.features[i].enabled = false; s.features[i].selecting = false;
+                                    // Save config when reset
+                                    let _ = s.save_config();
+                                }
 
-                    if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
-                        if s.features[i].rdev_key.is_some() {
-                            s.features[i].enabled = !s.features[i].enabled;
-                            if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
-                            // Save config when enable/disable state changes
+                                // 4. Enable/Disable Button
+                                let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
+                                                else { egui::Color32::from_rgb(150, 0, 0) };
+                                if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
+
+                                if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
+                                    if s.features[i].rdev_key.is_some() {
+                                        s.features[i].enabled = !s.features[i].enabled;
+                                        if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                                        // Save config when enable/disable state changes
+                                        let _ = s.save_config();
+                                    }
+                                }
+
+                                // Auto Clicker delay slider
+                                if s.features[i].id == FeatureId::AutoClicker {
+                                    ui.end_row();
+                                    ui.label("");
+                                    ui.label("Delay (ms):");
+                                    if ui.add(egui::Slider::new(&mut s.auto_clicker_delay, 1..=50)).changed() {
+                                        let _ = s.save_config();
+                                    }
+                                    ui.label(format!("{} ms", s.auto_clicker_delay));
+                                }
+
+                                ui.end_row(); // Move to the next row in the grid
+                            }
+                        });
+                });
+
+                // Right column - Screen Editor
+                ui.vertical(|ui| {
+                    ui.heading("Screen Editor");
+                    ui.add_space(5.0);
+
+                    ui.label("Position X:");
+                    ui.add(egui::DragValue::new(&mut s.position_x).speed(1.0));
+                    ui.add_space(5.0);
+
+                    ui.label("Position Y:");
+                    ui.add(egui::DragValue::new(&mut s.position_y).speed(1.0));
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            // Get current mouse position
+                            unsafe {
+                                let mut pt = POINT { x: 0, y: 0 };
+                                if GetCursorPos(&mut pt).as_bool() {
+                                    s.position_x = pt.x;
+                                    s.position_y = pt.y;
+                                    let _ = s.save_config();
+                                }
+                            }
+                        }
+                        if ui.button("Load").clicked() {
+                            // Move mouse to saved position
+                            move_mouse(s.position_x, s.position_y);
+                        }
+                        if ui.button("Clear").clicked() {
+                            s.position_x = 0;
+                            s.position_y = 0;
                             let _ = s.save_config();
                         }
-                    }
+                    });
 
-                        ui.end_row(); // Move to the next row in the grid
-                    }
+                    ui.add_space(10.0);
+                    ui.label(format!("Saved: X={}, Y={}", s.position_x, s.position_y));
                 });
+            });
 
             ui.add_space(15.0);
             ui.separator();
@@ -1010,7 +1088,7 @@ fn rdev_key_to_name(key: Key) -> String {
 fn main() -> eframe::Result {
     unsafe { let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([450.0, 400.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([700.0, 500.0]),
         ..Default::default()
     };
     let state = Arc::new(Mutex::new(AppState::new()));
