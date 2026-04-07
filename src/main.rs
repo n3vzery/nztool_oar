@@ -887,7 +887,7 @@ impl eframe::App for KeyBindApp {
 
             let mut save_needed = false;
             {
-                let AppState { features, auto_clicker_delay, shift_held, .. } = &mut *s;
+                let AppState { features, shift_held, .. } = &mut *s;
 
                 for feature in features.iter_mut() {
                     let id = feature.id;
@@ -898,7 +898,7 @@ impl eframe::App for KeyBindApp {
 
                     ui.horizontal(|ui| {
                         ui.label(format!("{}:", name));
-                        
+
                         let key_text = if selecting { "Waiting...".into() }
                                        else if let Some(k) = rdev_key { rdev_key_to_name(k) }
                                        else { "None".into() };
@@ -932,13 +932,6 @@ impl eframe::App for KeyBindApp {
                             feature.selecting = false;
                             save_needed = true;
                         }
-
-                        if id == FeatureId::AutoClicker {
-                            ui.label("Delay:");
-                            if ui.add(egui::Slider::new(auto_clicker_delay, 1..=50)).changed() {
-                                save_needed = true;
-                            }
-                        }
                     });
                 }
             }
@@ -948,39 +941,68 @@ impl eframe::App for KeyBindApp {
             ui.add_space(10.0);
 
             // Screen Editor at the bottom
-            ui.heading("Screen Editor");
-            ui.add_space(5.0);
+            egui::CollapsingHeader::new("Screen Editor").show(ui, |ui| {
+                ui.add_space(5.0);
 
-            egui::CollapsingHeader::new("Tips Skip Settings").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Y offset:");
+                    ui.label("Auto Clicker Delay:");
+                    if ui.add(egui::Slider::new(&mut s.auto_clicker_delay, 1..=50)).changed() {
+                        save_needed = true;
+                    }
+                });
+
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Position X:");
+                    if ui.add(egui::DragValue::new(&mut s.position_x).speed(1.0)).changed() {
+                        save_needed = true;
+                    }
+                    ui.label("Position Y:");
+                    if ui.add(egui::DragValue::new(&mut s.position_y).speed(1.0)).changed() {
+                        save_needed = true;
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        save_needed = true;
+                    }
+                    if ui.button("Load").clicked() {
+                        let _ = s.load_config();
+                    }
+                    if ui.button("Clear").clicked() {
+                        s.position_x = 0;
+                        s.position_y = 0;
+                        save_needed = true;
+                    }
+                });
+
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Tips Skip Y offset:");
                     if ui.add(egui::DragValue::new(&mut s.tips_skip_y_offset).speed(1.0)).changed() {
                         save_needed = true;
                     }
                 });
-            });
 
-            egui::CollapsingHeader::new("Restart Settings").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Y offset:");
+                    ui.label("Restart Y offset:");
                     if ui.add(egui::DragValue::new(&mut s.restart_y_offset).speed(1.0)).changed() {
                         save_needed = true;
                     }
                 });
-            });
 
-            egui::CollapsingHeader::new("Hacking Device (PostMessage) Settings").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Y offset:");
+                    ui.label("Hacking Device (PostMessage) Y offset:");
                     if ui.add(egui::DragValue::new(&mut s.hacking_y_offset).speed(1.0)).changed() {
                         save_needed = true;
                     }
                 });
-            });
 
-            egui::CollapsingHeader::new("Hacking Device (PostMessage 2) Settings").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Y offset:");
+                    ui.label("Hacking Device (PostMessage 2) Y offset:");
                     if ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0)).changed() {
                         save_needed = true;
                     }
