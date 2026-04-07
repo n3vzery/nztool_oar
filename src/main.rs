@@ -474,7 +474,7 @@ impl AppState {
                 unsafe {
                     let monitors = &mut *(dw_data.0 as *mut Vec<MONITORINFO>);
                     let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-                    if GetMonitorInfoW(h_monitor, &mut info).is_ok() { monitors.push(info); }
+                    if GetMonitorInfoW(h_monitor, &mut info).as_bool() { monitors.push(info); }
                     TRUE
                 }
             }
