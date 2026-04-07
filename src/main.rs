@@ -492,13 +492,6 @@ impl AppState {
         self.shift_held = !self.shift_held;
         send_key_state(0x2A, self.shift_held);
     }
-
-    fn release_shift(&mut self) {
-        if self.shift_held {
-            self.shift_held = false;
-            send_key_state(0x2A, false);
-        }
-    }
 }
 
 struct KeyBindApp {
