@@ -950,6 +950,7 @@ impl eframe::App for KeyBindApp {
                 });
 
             ui.add_space(10.0);
+            ui.separator();
             egui::CollapsingHeader::new("Screen Editor").show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                 // Monitor ID
