@@ -889,123 +889,63 @@ impl eframe::App for KeyBindApp {
             {
                 let AppState { features, shift_held, .. } = &mut *s;
 
-                for feature in features.iter_mut() {
-                    let id = feature.id;
-                    let name = feature.name.clone();
-                    let enabled = feature.enabled;
-                    let selecting = feature.selecting;
-                    let rdev_key = feature.rdev_key;
+                // Header row
+                egui::Grid::new("key_bindings_grid")
+                    .num_columns(4)
+                    .spacing([20.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Название").strong());
+                        ui.label(egui::RichText::new("Select Key").strong());
+                        ui.label(egui::RichText::new("Enable/Disable").strong());
+                        ui.label(egui::RichText::new("Reset").strong());
+                        ui.end_row();
 
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{}:", name));
+                        for feature in features.iter_mut() {
+                            let id = feature.id;
+                            let name = feature.name.clone();
+                            let enabled = feature.enabled;
+                            let selecting = feature.selecting;
+                            let rdev_key = feature.rdev_key;
 
-                        let key_text = if selecting { "Waiting...".into() }
-                                       else if let Some(k) = rdev_key { rdev_key_to_name(k) }
-                                       else { "None".into() };
+                            ui.label(name);
 
-                        if ui.button(key_text).clicked() {
-                            feature.selecting = true;
-                        }
+                            let key_text = if selecting { "Waiting...".into() }
+                                           else if let Some(k) = rdev_key { rdev_key_to_name(k) }
+                                           else { "None".into() };
 
-                        if ui.button("Reset").clicked() {
-                            if id == FeatureId::ShiftToggle && *shift_held {
-                                *shift_held = false;
-                                send_key_state(0x2A, false);
+                            if ui.button(key_text).clicked() {
+                                feature.selecting = true;
                             }
-                            feature.rdev_key = None;
-                            feature.enabled = false;
-                            feature.selecting = false;
-                            save_needed = true;
-                        }
 
-                        let mut color = if enabled { egui::Color32::from_rgb(0, 150, 0) }
-                                        else { egui::Color32::from_rgb(150, 0, 0) };
-                        if id == FeatureId::ShiftToggle && *shift_held && enabled { color = egui::Color32::BLUE; }
+                            let mut color = if enabled { egui::Color32::from_rgb(0, 150, 0) }
+                                            else { egui::Color32::from_rgb(150, 0, 0) };
+                            if id == FeatureId::ShiftToggle && *shift_held && enabled { color = egui::Color32::BLUE; }
 
-                        if ui.add(egui::Button::new("Toggle").fill(color)).clicked() {
-                            if feature.rdev_key.is_some() {
-                                feature.enabled = !feature.enabled;
-                                if !feature.enabled && id == FeatureId::ShiftToggle && *shift_held {
+                            if ui.add(egui::Button::new("Toggle").fill(color)).clicked() {
+                                if feature.rdev_key.is_some() {
+                                    feature.enabled = !feature.enabled;
+                                    if !feature.enabled && id == FeatureId::ShiftToggle && *shift_held {
+                                        *shift_held = false;
+                                        send_key_state(0x2A, false);
+                                    }
+                                    save_needed = true;
+                                }
+                            }
+
+                            if ui.button("Reset").clicked() {
+                                if id == FeatureId::ShiftToggle && *shift_held {
                                     *shift_held = false;
                                     send_key_state(0x2A, false);
                                 }
+                                feature.rdev_key = None;
+                                feature.enabled = false;
+                                feature.selecting = false;
                                 save_needed = true;
                             }
+                            ui.end_row();
                         }
                     });
-                }
             }
-
-            ui.add_space(15.0);
-
-            // Screen Editor at the bottom
-            egui::CollapsingHeader::new("Screen Editor").show(ui, |ui| {
-                ui.add_space(5.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Auto Clicker Delay:");
-                    if ui.add(egui::Slider::new(&mut s.auto_clicker_delay, 1..=50)).changed() {
-                        save_needed = true;
-                    }
-                });
-
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Position X:");
-                    if ui.add(egui::DragValue::new(&mut s.position_x).speed(1.0)).changed() {
-                        save_needed = true;
-                    }
-                    ui.label("Position Y:");
-                    if ui.add(egui::DragValue::new(&mut s.position_y).speed(1.0)).changed() {
-                        save_needed = true;
-                    }
-                });
-
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        save_needed = true;
-                    }
-                    if ui.button("Load").clicked() {
-                        let _ = s.load_config();
-                    }
-                    if ui.button("Clear").clicked() {
-                        s.position_x = 0;
-                        s.position_y = 0;
-                        save_needed = true;
-                    }
-                });
-
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Tips Skip Y offset:");
-                    if ui.add(egui::DragValue::new(&mut s.tips_skip_y_offset).speed(1.0)).changed() {
-                        save_needed = true;
-                    }
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Restart Y offset:");
-                    if ui.add(egui::DragValue::new(&mut s.restart_y_offset).speed(1.0)).changed() {
-                        save_needed = true;
-                    }
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Hacking Device (PostMessage) Y offset:");
-                    if ui.add(egui::DragValue::new(&mut s.hacking_y_offset).speed(1.0)).changed() {
-                        save_needed = true;
-                    }
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("Hacking Device (PostMessage 2) Y offset:");
-                    if ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0)).changed() {
-                        save_needed = true;
-                    }
-                });
-            });
 
             ui.add_space(15.0);
 
