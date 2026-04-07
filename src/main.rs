@@ -861,22 +861,22 @@ impl eframe::App for KeyBindApp {
                     }
                 });
 
-            ui.add_space(15.0);
-
-            ui.horizontal(|ui| {
-                ui.label("Monitor ID:");
-                if ui.text_edit_singleline(&mut s.monitor_id).changed() {
-                    s.update_screen_position();
-                    // Save config when monitor_id changes
-                    let _ = s.save_config();
-                }
-            });
-            ui.add_space(5.0);
-            ui.label(format!("Monitor Pos: {}x{}, Size: {}x{}", s.x_offset, s.y_offset, s.width, s.height));
-            if s.shift_held { ui.colored_label(egui::Color32::LIGHT_BLUE, "SHIFT IS CURRENTLY HELD"); }
-
             ui.add_space(10.0);
             egui::CollapsingHeader::new("Screen Editor").show(ui, |ui| {
+                // Monitor ID
+                ui.horizontal(|ui| {
+                    ui.label("Monitor ID:");
+                    if ui.text_edit_singleline(&mut s.monitor_id).changed() {
+                        s.update_screen_position();
+                        let _ = s.save_config();
+                    }
+                });
+
+                // Monitor Pos (display only)
+                ui.label(format!("Monitor Pos: {}x{}, Size: {}x{}", s.x_offset, s.y_offset, s.width, s.height));
+
+                ui.add_space(5.0);
+
                 // Auto Clicker Delay slider
                 ui.horizontal(|ui| {
                     ui.label("Auto Clicker Delay:");
