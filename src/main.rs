@@ -858,62 +858,71 @@ impl eframe::App for KeyBindApp {
 
             // Two-column layout: Features (left) | Screen Editor (right)
             ui.horizontal(|ui| {
-                // Left column - Features
+                // Left column - Features with CollapsingHeaders
                 ui.vertical(|ui| {
                     ui.heading("Features");
                     ui.add_space(5.0);
 
-                    egui::Grid::new("features_grid")
-                        .num_columns(4)
-                        .spacing([20.0, 8.0])
-                        .show(ui, |ui| {
-                            for i in 0..s.features.len() {
-                                // 1. Feature Name
-                                ui.label(format!("{}:", s.features[i].name));
+                    for i in 0..s.features.len() {
+                        let feature = &s.features[i];
+                        let header_text = format!("{} [{}]", feature.name, if feature.enabled { "enabled" } else { "disabled" });
 
-                                // 2. Select Key Button
-                                let key_text = if s.features[i].selecting { "Waiting...".into() }
-                                               else if let Some(k) = s.features[i].rdev_key { rdev_key_to_name(k) }
-                                               else { "Select Key".into() };
+                        egui::CollapsingHeader::new(header_text)
+                            .show(ui, |ui| {
+                                ui.add_space(5.0);
 
-                                if ui.button(key_text).clicked() { s.features[i].selecting = true; }
+                                // Select Key button
+                                ui.horizontal(|ui| {
+                                    ui.label("Select Key: ");
+                                    let key_text = if feature.selecting { "Waiting...".into() }
+                                                   else if let Some(k) = feature.rdev_key { rdev_key_to_name(k) }
+                                                   else { "None".into() };
 
-                                // 3. Reset Button
-                                if ui.button("Reset").clicked() {
-                                    if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
-                                    s.features[i].rdev_key = None; s.features[i].enabled = false; s.features[i].selecting = false;
-                                    // Save config when reset
-                                    let _ = s.save_config();
-                                }
+                                    if ui.button(key_text).clicked() {
+                                        s.features[i].selecting = true;
+                                    }
 
-                                // 4. Enable/Disable Button
-                                let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
-                                                else { egui::Color32::from_rgb(150, 0, 0) };
-                                if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
-
-                                if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
-                                    if s.features[i].rdev_key.is_some() {
-                                        s.features[i].enabled = !s.features[i].enabled;
-                                        if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
-                                        // Save config when enable/disable state changes
+                                    if ui.button("Reset").clicked() {
+                                        if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                                        s.features[i].rdev_key = None;
+                                        s.features[i].enabled = false;
+                                        s.features[i].selecting = false;
                                         let _ = s.save_config();
                                     }
-                                }
+                                });
+
+                                ui.add_space(5.0);
+
+                                // Enable/Disable button
+                                ui.horizontal(|ui| {
+                                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
+                                                    else { egui::Color32::from_rgb(150, 0, 0) };
+                                    if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
+
+                                    if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
+                                        if s.features[i].rdev_key.is_some() {
+                                            s.features[i].enabled = !s.features[i].enabled;
+                                            if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                                            let _ = s.save_config();
+                                        }
+                                    }
+                                });
 
                                 // Auto Clicker delay slider
                                 if s.features[i].id == FeatureId::AutoClicker {
-                                    ui.end_row();
-                                    ui.label("");
-                                    ui.label("Delay (ms):");
-                                    if ui.add(egui::Slider::new(&mut s.auto_clicker_delay, 1..=50)).changed() {
-                                        let _ = s.save_config();
-                                    }
-                                    ui.label(format!("{} ms", s.auto_clicker_delay));
+                                    ui.add_space(8.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label("Delay: ");
+                                        if ui.add(egui::Slider::new(&mut s.auto_clicker_delay, 1..=50)).changed() {
+                                            let _ = s.save_config();
+                                        }
+                                        ui.label(format!(" {}ms", s.auto_clicker_delay));
+                                    });
                                 }
 
-                                ui.end_row(); // Move to the next row in the grid
-                            }
-                        });
+                                ui.add_space(5.0);
+                            });
+                    }
                 });
 
                 // Right column - Screen Editor
