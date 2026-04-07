@@ -84,7 +84,7 @@ unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_p
 
 unsafe extern "system" fn low_level_keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
     if n_code == HC_ACTION as i32 {
-        let kb_ll = *(l_param.0 as *const KBDLLHOOKSTRUCT);
+        let kb_ll = unsafe { *(l_param.0 as *const KBDLLHOOKSTRUCT) };
         
         // Space key scancode is 0x39
         if kb_ll.scanCode == 0x39 {
