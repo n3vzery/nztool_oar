@@ -939,6 +939,7 @@ impl eframe::App for KeyBindApp {
 
             ui.add_space(10.0);
             egui::CollapsingHeader::new("Screen Editor").show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 // Monitor ID
                 ui.horizontal(|ui| {
                     ui.label("Monitor ID:");
@@ -1009,6 +1010,7 @@ impl eframe::App for KeyBindApp {
                 ui.horizontal(|ui| {
                     ui.label("Hacking2 Y Offset:");
                     ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0));
+                });
                 });
             });
         });
