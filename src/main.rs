@@ -474,7 +474,7 @@ impl AppState {
                 unsafe {
                     let monitors = &mut *(dw_data.0 as *mut Vec<MONITORINFO>);
                     let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-                    if GetMonitorInfoW(h_monitor, &mut info).as_bool() { monitors.push(info); }
+                    if GetMonitorInfoW(h_monitor, &mut info).is_ok() { monitors.push(info); }
                     TRUE
                 }
             }
@@ -934,7 +934,7 @@ impl eframe::App for KeyBindApp {
                             // Get current mouse position
                             unsafe {
                                 let mut pt = POINT { x: 0, y: 0 };
-                                if GetCursorPos(&mut pt).as_bool() {
+                                if GetCursorPos(&mut pt).is_ok() {
                                     s.position_x = pt.x;
                                     s.position_y = pt.y;
                                     let _ = s.save_config();
