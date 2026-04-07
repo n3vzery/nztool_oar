@@ -907,6 +907,17 @@ impl eframe::App for KeyBindApp {
                             feature.selecting = true;
                         }
 
+                        if ui.button("Reset").clicked() {
+                            if id == FeatureId::ShiftToggle && *shift_held {
+                                *shift_held = false;
+                                send_key_state(0x2A, false);
+                            }
+                            feature.rdev_key = None;
+                            feature.enabled = false;
+                            feature.selecting = false;
+                            save_needed = true;
+                        }
+
                         let mut color = if enabled { egui::Color32::from_rgb(0, 150, 0) }
                                         else { egui::Color32::from_rgb(150, 0, 0) };
                         if id == FeatureId::ShiftToggle && *shift_held && enabled { color = egui::Color32::BLUE; }
@@ -921,24 +932,11 @@ impl eframe::App for KeyBindApp {
                                 save_needed = true;
                             }
                         }
-
-                        if ui.button("Reset").clicked() {
-                            if id == FeatureId::ShiftToggle && *shift_held {
-                                *shift_held = false;
-                                send_key_state(0x2A, false);
-                            }
-                            feature.rdev_key = None;
-                            feature.enabled = false;
-                            feature.selecting = false;
-                            save_needed = true;
-                        }
                     });
                 }
             }
 
             ui.add_space(15.0);
-            ui.separator();
-            ui.add_space(10.0);
 
             // Screen Editor at the bottom
             egui::CollapsingHeader::new("Screen Editor").show(ui, |ui| {
@@ -1010,8 +1008,6 @@ impl eframe::App for KeyBindApp {
             });
 
             ui.add_space(15.0);
-            ui.separator();
-            ui.add_space(10.0);
 
             ui.horizontal(|ui| {
                 ui.label("Monitor ID:");
