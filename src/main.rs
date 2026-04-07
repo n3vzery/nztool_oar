@@ -907,9 +907,9 @@ impl eframe::App for KeyBindApp {
                             feature.selecting = true;
                         }
 
-                        let mut color = if feature.enabled { egui::Color32::from_rgb(0, 150, 0) }
+                        let mut color = if enabled { egui::Color32::from_rgb(0, 150, 0) }
                                         else { egui::Color32::from_rgb(150, 0, 0) };
-                        if id == FeatureId::ShiftToggle && *shift_held && feature.enabled { color = egui::Color32::BLUE; }
+                        if id == FeatureId::ShiftToggle && *shift_held && enabled { color = egui::Color32::BLUE; }
 
                         if ui.add(egui::Button::new("Toggle").fill(color)).clicked() {
                             if feature.rdev_key.is_some() {
