@@ -21,6 +21,12 @@ static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
 static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Thread ID of the mouse hook thread for clean shutdown
 static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+// Thread ID of the keyboard hook thread for clean shutdown
+static KEYBOARD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+// Global variable for Bhop toggle state
+static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
+// Global variable to store the real (physical) state of Space key
+static REAL_SPACE_DOWN: AtomicBool = AtomicBool::new(false);
 
 // Helper to check if the game window is currently focused
 fn is_game_focused() -> bool {
@@ -70,6 +76,22 @@ unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_p
                 } else if w_param.0 as u32 == WM_LBUTTONUP {
                     REAL_LMB_DOWN.store(false, Ordering::SeqCst);
                 }
+            }
+        }
+    }
+    unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
+}
+
+unsafe extern "system" fn low_level_keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    if n_code == HC_ACTION as i32 {
+        let kb_ll = *(l_param.0 as *const KBDLLHOOKSTRUCT);
+        
+        // Space key scancode is 0x39
+        if kb_ll.scanCode == 0x39 {
+            if w_param.0 as u32 == WM_KEYDOWN || w_param.0 as u32 == WM_SYSKEYDOWN {
+                REAL_SPACE_DOWN.store(true, Ordering::SeqCst);
+            } else if w_param.0 as u32 == WM_KEYUP || w_param.0 as u32 == WM_SYSKEYUP {
+                REAL_SPACE_DOWN.store(false, Ordering::SeqCst);
             }
         }
     }
@@ -507,10 +529,16 @@ struct KeyBindApp {
 
 impl Drop for KeyBindApp {
     fn drop(&mut self) {
-        let thread_id = MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst);
-        if thread_id != 0 {
+        let mouse_thread_id = MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst);
+        if mouse_thread_id != 0 {
             unsafe {
-                let _ = PostThreadMessageA(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+                let _ = PostThreadMessageA(mouse_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+        let keyboard_thread_id = KEYBOARD_HOOK_THREAD_ID.load(Ordering::SeqCst);
+        if keyboard_thread_id != 0 {
+            unsafe {
+                let _ = PostThreadMessageA(keyboard_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
             }
         }
     }
@@ -531,6 +559,38 @@ impl KeyBindApp {
                     DispatchMessageW(&msg);
                 }
                 let _ = UnhookWindowsHookEx(hook);
+            }
+        });
+
+        // Start keyboard hook for Space key detection (Bhop feature)
+        thread::spawn(|| {
+            unsafe {
+                KEYBOARD_HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
+
+                let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), HINSTANCE::default(), 0).unwrap();
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                let _ = UnhookWindowsHookEx(hook);
+            }
+        });
+
+        // Bhop worker thread - sends additional Space taps when player jumps
+        thread::spawn(move || {
+            loop {
+                let bhop_enabled = BHOP_ACTIVE.load(Ordering::SeqCst);
+                let space_pressed = REAL_SPACE_DOWN.load(Ordering::SeqCst);
+                
+                if bhop_enabled && space_pressed && is_game_focused() {
+                    // Send additional Space tap for bhop
+                    send_key_tap(0x39);
+                    // Small delay to avoid overwhelming the game
+                    thread::sleep(Duration::from_millis(15));
+                } else {
+                    thread::sleep(Duration::from_millis(5));
+                }
             }
         });
 
@@ -593,6 +653,13 @@ impl KeyBindApp {
                             // Toggle global atomic variable
                             let current = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
                             AUTOCLICKER_ACTIVE.store(!current, Ordering::SeqCst);
+                            return None; // Block the bind key itself
+                        }
+
+                        if feature_id == FeatureId::Bhop {
+                            // Toggle global atomic variable
+                            let current = BHOP_ACTIVE.load(Ordering::SeqCst);
+                            BHOP_ACTIVE.store(!current, Ordering::SeqCst);
                             return None; // Block the bind key itself
                         }
 
