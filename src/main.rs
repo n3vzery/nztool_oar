@@ -17,16 +17,10 @@ use windows::Win32::UI::HiDpi::*;
 
 // Global variable to store the real (physical) state of LMB
 static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
-// Global variable to store the real (physical) state of Space
-static REAL_SPACE_DOWN: AtomicBool = AtomicBool::new(false);
 // Global variable for autoclicker mode to avoid Mutex contention
 static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
-// Global variable for bhop mode
-static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Thread ID of the mouse hook thread for clean shutdown
 static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-// Thread ID of the keyboard hook thread for clean shutdown
-static KEYBOARD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 // Helper to check if the game window is currently focused
 fn is_game_focused() -> bool {
@@ -82,29 +76,6 @@ unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_p
     unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
 }
 
-// Low level keyboard proc to track physical Space key presses
-unsafe extern "system" fn low_level_keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
-    if n_code == HC_ACTION as i32 {
-        unsafe {
-            let kb_ll = *(l_param.0 as *const KBDLLHOOKSTRUCT);
-            
-            // LLKHF_INJECTED (0x01) means the event was generated programmatically (SendInput).
-            // We ignore such events to prevent self-triggering.
-            if !kb_ll.flags.contains(LLKHF_INJECTED) {
-                // Space scancode is 0x39
-                if kb_ll.scanCode == 0x39 {
-                    if w_param.0 as u32 == WM_KEYDOWN || w_param.0 as u32 == WM_SYSKEYDOWN {
-                        REAL_SPACE_DOWN.store(true, Ordering::SeqCst);
-                    } else if w_param.0 as u32 == WM_KEYUP || w_param.0 as u32 == WM_SYSKEYUP {
-                        REAL_SPACE_DOWN.store(false, Ordering::SeqCst);
-                    }
-                }
-            }
-        }
-    }
-    unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
-}
-
 #[derive(PartialEq, Clone, Copy)]
 enum FeatureId {
     HackingPostMessage,
@@ -137,8 +108,8 @@ struct SerializableConfig {
     hacking2_y_offset: i32,
 }
 
-fn default_tips_skip_y() -> i32 { 810 } // 1080 * 0.75
-fn default_restart_y() -> i32 { 486 }    // 1080 * 0.45
+fn default_tips_skip_y() -> i32 { 810 }
+fn default_restart_y() -> i32 { 486 }
 fn default_hacking_y() -> i32 { -140 }
 fn default_hacking2_y() -> i32 { -140 }
 
@@ -521,6 +492,13 @@ impl AppState {
         self.shift_held = !self.shift_held;
         send_key_state(0x2A, self.shift_held);
     }
+
+    fn release_shift(&mut self) {
+        if self.shift_held {
+            self.shift_held = false;
+            send_key_state(0x2A, false);
+        }
+    }
 }
 
 struct KeyBindApp {
@@ -529,16 +507,10 @@ struct KeyBindApp {
 
 impl Drop for KeyBindApp {
     fn drop(&mut self) {
-        let mouse_thread_id = MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst);
-        if mouse_thread_id != 0 {
+        let thread_id = MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst);
+        if thread_id != 0 {
             unsafe {
-                let _ = PostThreadMessageA(mouse_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
-            }
-        }
-        let keyboard_thread_id = KEYBOARD_HOOK_THREAD_ID.load(Ordering::SeqCst);
-        if keyboard_thread_id != 0 {
-            unsafe {
-                let _ = PostThreadMessageA(keyboard_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+                let _ = PostThreadMessageA(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
             }
         }
     }
@@ -553,22 +525,6 @@ impl KeyBindApp {
                 MOUSE_HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
 
                 let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), HINSTANCE::default(), 0).unwrap();
-                let mut msg = MSG::default();
-                while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
-                let _ = UnhookWindowsHookEx(hook);
-            }
-        });
-
-        // Start the real keyboard listener in a separate thread with a message loop for Space key tracking
-        thread::spawn(|| {
-            unsafe {
-                // Store current thread ID for clean shutdown
-                KEYBOARD_HOOK_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
-
-                let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), HINSTANCE::default(), 0).unwrap();
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
                     let _ = TranslateMessage(&msg);
@@ -594,29 +550,6 @@ impl KeyBindApp {
                     if REAL_LMB_DOWN.load(Ordering::SeqCst) {
                         send_mouse_click();
                         thread::sleep(Duration::from_millis(delay_ms as u64));
-                    } else {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                } else {
-                    thread::sleep(Duration::from_millis(5));
-                }
-            }
-        });
-
-        let state_clone_bhop = state.clone();
-        thread::spawn(move || {
-            loop {
-                let enabled = {
-                    let s = state_clone_bhop.lock().unwrap();
-                    s.features.iter().any(|f| f.id == FeatureId::Bhop && f.enabled)
-                };
-                let active = BHOP_ACTIVE.load(Ordering::SeqCst);
-
-                if active && enabled && is_game_focused() {
-                    // Use REAL_SPACE_DOWN to check if Space is physically pressed
-                    if REAL_SPACE_DOWN.load(Ordering::SeqCst) {
-                        send_key_tap(0x39); // Space scancode
-                        thread::sleep(Duration::from_millis(15)); // Small delay between jumps
                     } else {
                         thread::sleep(Duration::from_millis(5));
                     }
@@ -660,13 +593,6 @@ impl KeyBindApp {
                             // Toggle global atomic variable
                             let current = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
                             AUTOCLICKER_ACTIVE.store(!current, Ordering::SeqCst);
-                            return None; // Block the bind key itself
-                        }
-
-                        if feature_id == FeatureId::Bhop {
-                            // Toggle global atomic variable
-                            let current = BHOP_ACTIVE.load(Ordering::SeqCst);
-                            BHOP_ACTIVE.store(!current, Ordering::SeqCst);
                             return None; // Block the bind key itself
                         }
 
@@ -845,13 +771,22 @@ impl KeyBindApp {
     }
 
     fn hold_item_bug() {
-        send_mouse_state(true);
+        Self::send_mouse_state(true);
         thread::sleep(Duration::from_millis(7));
         send_key_tap(0x01);
         thread::sleep(Duration::from_millis(7));
-        send_mouse_state(false);
+        Self::send_mouse_state(false);
         thread::sleep(Duration::from_millis(7));
         send_key_tap(0x01);
+    }
+
+    fn send_mouse_state(down: bool) {
+        unsafe {
+            let mut input = INPUT::default();
+            input.r#type = INPUT_MOUSE;
+            input.Anonymous.mi.dwFlags = if down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP };
+            let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        }
     }
 }
 
@@ -885,67 +820,46 @@ impl eframe::App for KeyBindApp {
             ui.heading("Key Bindings App (Rust OAR Helper)");
             ui.add_space(10.0);
 
-            let mut save_needed = false;
-            {
-                let AppState { features, shift_held, .. } = &mut *s;
+            egui::Grid::new("features_grid")
+                .num_columns(4)
+                .spacing([20.0, 8.0])
+                .show(ui, |ui| {
+                    for i in 0..s.features.len() {
+                        // 1. Feature Name
+                        ui.label(format!("{}:", s.features[i].name));
 
-                // Header row
-                egui::Grid::new("key_bindings_grid")
-                    .num_columns(4)
-                    .spacing([20.0, 10.0])
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Название").strong());
-                        ui.label(egui::RichText::new("Select Key").strong());
-                        ui.label(egui::RichText::new("Enable/Disable").strong());
-                        ui.label(egui::RichText::new("Reset").strong());
-                        ui.end_row();
+                        // 2. Select Key Button
+                        let key_text = if s.features[i].selecting { "Waiting...".into() }
+                                       else if let Some(k) = s.features[i].rdev_key { rdev_key_to_name(k) }
+                                       else { "Select Key".into() };
 
-                        for feature in features.iter_mut() {
-                            let id = feature.id;
-                            let name = feature.name.clone();
-                            let enabled = feature.enabled;
-                            let selecting = feature.selecting;
-                            let rdev_key = feature.rdev_key;
+                        if ui.button(key_text).clicked() { s.features[i].selecting = true; }
 
-                            ui.label(name);
+                        // 3. Reset Button
+                        if ui.button("Reset").clicked() {
+                        if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                        s.features[i].rdev_key = None; s.features[i].enabled = false; s.features[i].selecting = false;
+                        // Save config when reset
+                        let _ = s.save_config();
+                    }
 
-                            let key_text = if selecting { "Waiting...".into() }
-                                           else if let Some(k) = rdev_key { rdev_key_to_name(k) }
-                                           else { "None".into() };
+                    // 4. Enable/Disable Button
+                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
+                                    else { egui::Color32::from_rgb(150, 0, 0) };
+                    if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
 
-                            if ui.button(key_text).clicked() {
-                                feature.selecting = true;
-                            }
-
-                            let mut color = if enabled { egui::Color32::from_rgb(0, 150, 0) }
-                                            else { egui::Color32::from_rgb(150, 0, 0) };
-                            if id == FeatureId::ShiftToggle && *shift_held && enabled { color = egui::Color32::BLUE; }
-
-                            if ui.add(egui::Button::new("Toggle").fill(color)).clicked() {
-                                if feature.rdev_key.is_some() {
-                                    feature.enabled = !feature.enabled;
-                                    if !feature.enabled && id == FeatureId::ShiftToggle && *shift_held {
-                                        *shift_held = false;
-                                        send_key_state(0x2A, false);
-                                    }
-                                    save_needed = true;
-                                }
-                            }
-
-                            if ui.button("Reset").clicked() {
-                                if id == FeatureId::ShiftToggle && *shift_held {
-                                    *shift_held = false;
-                                    send_key_state(0x2A, false);
-                                }
-                                feature.rdev_key = None;
-                                feature.enabled = false;
-                                feature.selecting = false;
-                                save_needed = true;
-                            }
-                            ui.end_row();
+                    if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
+                        if s.features[i].rdev_key.is_some() {
+                            s.features[i].enabled = !s.features[i].enabled;
+                            if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
+                            // Save config when enable/disable state changes
+                            let _ = s.save_config();
                         }
-                    });
-            }
+                    }
+
+                        ui.end_row(); // Move to the next row in the grid
+                    }
+                });
 
             ui.add_space(15.0);
 
@@ -953,15 +867,74 @@ impl eframe::App for KeyBindApp {
                 ui.label("Monitor ID:");
                 if ui.text_edit_singleline(&mut s.monitor_id).changed() {
                     s.update_screen_position();
-                    save_needed = true;
+                    // Save config when monitor_id changes
+                    let _ = s.save_config();
                 }
             });
+            ui.add_space(5.0);
             ui.label(format!("Monitor Pos: {}x{}, Size: {}x{}", s.x_offset, s.y_offset, s.width, s.height));
             if s.shift_held { ui.colored_label(egui::Color32::LIGHT_BLUE, "SHIFT IS CURRENTLY HELD"); }
 
-            if save_needed {
-                let _ = s.save_config();
-            }
+            ui.add_space(10.0);
+            egui::CollapsingHeader::new("Screen Editor").show(ui, |ui| {
+                // Auto Clicker Delay slider
+                ui.horizontal(|ui| {
+                    ui.label("Auto Clicker Delay:");
+                    ui.add(egui::Slider::new(&mut s.auto_clicker_delay, 1..=50).text("ms"));
+                });
+
+                ui.add_space(5.0);
+
+                // Position X/Y with Save/Load/Clear
+                ui.horizontal(|ui| {
+                    ui.label("Position X:");
+                    ui.add(egui::DragValue::new(&mut s.position_x).speed(1.0));
+                    ui.label("Position Y:");
+                    ui.add(egui::DragValue::new(&mut s.position_y).speed(1.0));
+                });
+
+                ui.add_space(5.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        let _ = s.save_config();
+                    }
+                    if ui.button("Load").clicked() {
+                        let _ = s.load_config();
+                    }
+                    if ui.button("Clear").clicked() {
+                        s.position_x = 0;
+                        s.position_y = 0;
+                        let _ = s.save_config();
+                    }
+                });
+
+                ui.add_space(10.0);
+
+                // Y offset for Tips Skip
+                ui.horizontal(|ui| {
+                    ui.label("Tips Skip Y Offset:");
+                    ui.add(egui::DragValue::new(&mut s.tips_skip_y_offset).speed(1.0));
+                });
+
+                // Y offset for Restart
+                ui.horizontal(|ui| {
+                    ui.label("Restart Y Offset:");
+                    ui.add(egui::DragValue::new(&mut s.restart_y_offset).speed(1.0));
+                });
+
+                // Y offset for Hacking Device
+                ui.horizontal(|ui| {
+                    ui.label("Hacking Y Offset:");
+                    ui.add(egui::DragValue::new(&mut s.hacking_y_offset).speed(1.0));
+                });
+
+                // Y offset for Hacking Device 2
+                ui.horizontal(|ui| {
+                    ui.label("Hacking2 Y Offset:");
+                    ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0));
+                });
+            });
         });
     }
 }
@@ -1010,15 +983,6 @@ fn send_key_state(scan: u16, down: bool) {
         input.r#type = INPUT_KEYBOARD;
         input.Anonymous.ki.wScan = scan;
         input.Anonymous.ki.dwFlags = if down { KEYEVENTF_SCANCODE } else { KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP };
-        let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-    }
-}
-
-fn send_mouse_state(down: bool) {
-    unsafe {
-        let mut input = INPUT::default();
-        input.r#type = INPUT_MOUSE;
-        input.Anonymous.mi.dwFlags = if down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP };
         let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
     }
 }
@@ -1078,7 +1042,7 @@ fn rdev_key_to_name(key: Key) -> String {
 fn main() -> eframe::Result {
     unsafe { let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([700.0, 500.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([450.0, 500.0]),
         ..Default::default()
     };
     let state = Arc::new(Mutex::new(AppState::new()));
