@@ -863,65 +863,84 @@ impl eframe::App for KeyBindApp {
                     ui.heading("Features");
                     ui.add_space(5.0);
 
-                    for i in 0..s.features.len() {
-                        let feature = &s.features[i];
-                        let header_text = format!("{} [{}]", feature.name, if feature.enabled { "enabled" } else { "disabled" });
+                    let mut save_needed = false;
+                    {
+                        let AppState { features, auto_clicker_delay, shift_held, .. } = &mut *s;
 
-                        egui::CollapsingHeader::new(header_text)
-                            .show(ui, |ui| {
-                                ui.add_space(5.0);
+                        for feature in features.iter_mut() {
+                            let id = feature.id;
+                            let name = feature.name.clone();
+                            let enabled = feature.enabled;
+                            let selecting = feature.selecting;
+                            let rdev_key = feature.rdev_key;
 
-                                // Select Key button
-                                ui.horizontal(|ui| {
-                                    ui.label("Select Key: ");
-                                    let key_text = if feature.selecting { "Waiting...".into() }
-                                                   else if let Some(k) = feature.rdev_key { rdev_key_to_name(k) }
-                                                   else { "None".into() };
+                            let header_text = format!("{} [{}]", name, if enabled { "enabled" } else { "disabled" });
 
-                                    if ui.button(key_text).clicked() {
-                                        s.features[i].selecting = true;
-                                    }
+                            egui::CollapsingHeader::new(header_text)
+                                .show(ui, |ui| {
+                                    ui.add_space(5.0);
 
-                                    if ui.button("Reset").clicked() {
-                                        if s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
-                                        s.features[i].rdev_key = None;
-                                        s.features[i].enabled = false;
-                                        s.features[i].selecting = false;
-                                        let _ = s.save_config();
-                                    }
-                                });
-
-                                ui.add_space(5.0);
-
-                                // Enable/Disable button
-                                ui.horizontal(|ui| {
-                                    let mut color = if s.features[i].enabled { egui::Color32::from_rgb(0, 150, 0) }
-                                                    else { egui::Color32::from_rgb(150, 0, 0) };
-                                    if s.features[i].id == FeatureId::ShiftToggle && s.shift_held && s.features[i].enabled { color = egui::Color32::BLUE; }
-
-                                    if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
-                                        if s.features[i].rdev_key.is_some() {
-                                            s.features[i].enabled = !s.features[i].enabled;
-                                            if !s.features[i].enabled && s.features[i].id == FeatureId::ShiftToggle { s.release_shift(); }
-                                            let _ = s.save_config();
-                                        }
-                                    }
-                                });
-
-                                // Auto Clicker delay slider
-                                if s.features[i].id == FeatureId::AutoClicker {
-                                    ui.add_space(8.0);
+                                    // Select Key button
                                     ui.horizontal(|ui| {
-                                        ui.label("Delay: ");
-                                        if ui.add(egui::Slider::new(&mut s.auto_clicker_delay, 1..=50)).changed() {
-                                            let _ = s.save_config();
-                                        }
-                                        ui.label(format!(" {}ms", s.auto_clicker_delay));
-                                    });
-                                }
+                                        ui.label("Select Key: ");
+                                        let key_text = if selecting { "Waiting...".into() }
+                                                       else if let Some(k) = rdev_key { rdev_key_to_name(k) }
+                                                       else { "None".into() };
 
-                                ui.add_space(5.0);
-                            });
+                                        if ui.button(key_text).clicked() {
+                                            feature.selecting = true;
+                                        }
+
+                                        if ui.button("Reset").clicked() {
+                                            if id == FeatureId::ShiftToggle && *shift_held {
+                                                *shift_held = false;
+                                                send_key_state(0x2A, false);
+                                            }
+                                            feature.rdev_key = None;
+                                            feature.enabled = false;
+                                            feature.selecting = false;
+                                            save_needed = true;
+                                        }
+                                    });
+
+                                    ui.add_space(5.0);
+
+                                    // Enable/Disable button
+                                    ui.horizontal(|ui| {
+                                        let mut color = if feature.enabled { egui::Color32::from_rgb(0, 150, 0) }
+                                                        else { egui::Color32::from_rgb(150, 0, 0) };
+                                        if id == FeatureId::ShiftToggle && *shift_held && feature.enabled { color = egui::Color32::BLUE; }
+
+                                        if ui.add(egui::Button::new("Enable/Disable").fill(color)).clicked() {
+                                            if feature.rdev_key.is_some() {
+                                                feature.enabled = !feature.enabled;
+                                                if !feature.enabled && id == FeatureId::ShiftToggle && *shift_held {
+                                                    *shift_held = false;
+                                                    send_key_state(0x2A, false);
+                                                }
+                                                save_needed = true;
+                                            }
+                                        }
+                                    });
+
+                                    // Auto Clicker delay slider
+                                    if id == FeatureId::AutoClicker {
+                                        ui.add_space(8.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label("Delay: ");
+                                            if ui.add(egui::Slider::new(auto_clicker_delay, 1..=50)).changed() {
+                                                save_needed = true;
+                                            }
+                                            ui.label(format!(" {}ms", *auto_clicker_delay));
+                                        });
+                                    }
+
+                                    ui.add_space(5.0);
+                                });
+                        }
+                    }
+                    if save_needed {
+                        let _ = s.save_config();
                     }
                 });
 
