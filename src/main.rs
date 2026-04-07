@@ -136,7 +136,7 @@ struct SerializableConfig {
     hacking2_y_offset: i32,
 }
 
-fn default_tips_skip_y() -> i32 { 810 }
+fn default_tips_skip_y() -> i32 { 830 }
 fn default_restart_y() -> i32 { 486 }
 fn default_hacking_y() -> i32 { -140 }
 fn default_hacking2_y() -> i32 { -140 }
@@ -479,7 +479,7 @@ impl AppState {
             auto_clicker_delay: 6,
             position_x: 0,
             position_y: 0,
-            tips_skip_y_offset: 810,
+            tips_skip_y_offset: 830,
             restart_y_offset: 486,
             hacking_y_offset: -140,
             hacking2_y_offset: -140,
@@ -526,6 +526,18 @@ impl AppState {
             self.shift_held = false;
             send_key_state(0x2A, false);
         }
+    }
+
+    fn reset_to_defaults(&mut self) {
+        self.auto_clicker_delay = 6;
+        self.position_x = 0;
+        self.position_y = 0;
+        self.tips_skip_y_offset = 830;
+        self.restart_y_offset = 486;
+        self.hacking_y_offset = -140;
+        self.hacking2_y_offset = -140;
+        self.monitor_id = "1".to_string();
+        self.update_screen_position();
     }
 }
 
@@ -972,22 +984,6 @@ impl eframe::App for KeyBindApp {
 
                 ui.add_space(5.0);
 
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        let _ = s.save_config();
-                    }
-                    if ui.button("Load").clicked() {
-                        let _ = s.load_config();
-                    }
-                    if ui.button("Clear").clicked() {
-                        s.position_x = 0;
-                        s.position_y = 0;
-                        let _ = s.save_config();
-                    }
-                });
-
-                ui.add_space(10.0);
-
                 // Y offset for Tips Skip
                 ui.horizontal(|ui| {
                     ui.label("Tips Skip Y Offset:");
@@ -1010,6 +1006,21 @@ impl eframe::App for KeyBindApp {
                 ui.horizontal(|ui| {
                     ui.label("Hacking2 Y Offset:");
                     ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0));
+                });
+
+                ui.add_space(10.0);
+
+                // Save/Load/Default buttons for Screen Editor
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        let _ = s.save_config();
+                    }
+                    if ui.button("Load").clicked() {
+                        let _ = s.load_config();
+                    }
+                    if ui.button("Default").clicked() {
+                        s.reset_to_defaults();
+                    }
                 });
                 });
             });
