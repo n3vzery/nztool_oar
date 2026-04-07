@@ -905,7 +905,7 @@ impl eframe::App for KeyBindApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Key Bindings App (Rust OAR Helper)");
+            ui.heading("nztool");
             ui.add_space(10.0);
 
             egui::Grid::new("features_grid")
@@ -1137,5 +1137,5 @@ fn main() -> eframe::Result {
     };
     let state = Arc::new(Mutex::new(AppState::new()));
     KeyBindApp::start_hotkey_listener(state.clone());
-    eframe::run_native("Key Bindings App", options, Box::new(|_| Ok(Box::new(KeyBindApp { state }))))
+    eframe::run_native("nztool", options, Box::new(|_| Ok(Box::new(KeyBindApp { state }))))
 }
