@@ -31,6 +31,9 @@ static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static LAST_FOCUS_CHECK: AtomicU64 = AtomicU64::new(0);
 static CACHED_FOCUS_VALUE: AtomicBool = AtomicBool::new(false);
 
+// Graceful shutdown flag for rdev::grab thread
+static RDEV_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
 // Worker thread messages for feature execution
 enum WorkerMessage {
     ShiftToggle,
@@ -658,6 +661,9 @@ struct KeyBindApp {
 
 impl Drop for KeyBindApp {
     fn drop(&mut self) {
+        // Signal rdev::grab thread to shut down gracefully
+        RDEV_SHUTDOWN.store(true, Ordering::SeqCst);
+
         let mouse_thread_id = InputState.get_mouse_hook_thread_id();
         if mouse_thread_id != 0 {
             unsafe {
@@ -823,6 +829,11 @@ impl KeyBindApp {
         thread::spawn(move || {
             // grab is only needed for hotkey processing (Key)
             let callback = move |event: Event| {
+                // Gracefully shut down if requested
+                if RDEV_SHUTDOWN.load(Ordering::SeqCst) {
+                    return None;
+                }
+
                 // If it's a mouse event, just let it pass through to the system
                 if let EventType::ButtonPress(_)
                 | EventType::ButtonRelease(_)
@@ -904,7 +915,6 @@ impl KeyBindApp {
 
                 // Send to worker thread without holding lock
                 if let Some(action) = feature_action {
-                    // Use send instead of try_send (std::sync::mpsc::Sender doesn't have try_send)
                     let _ = worker_tx.send(action);
                     return None;
                 }
@@ -1106,32 +1116,15 @@ impl eframe::App for KeyBindApp {
         if let Some(idx) = s.features.iter().position(|f| f.selecting) {
             // Use egui's optimized key_pressed method instead of manual iteration
             let key = ctx.input(|i| {
-                // Check for Escape first
-                if i.key_pressed(egui::Key::Escape) {
-                    return Some(egui::Key::Escape);
-                }
-                // Check other keys in order
-                for k in &[
-                    egui::Key::A, egui::Key::B, egui::Key::C, egui::Key::D, egui::Key::E,
-                    egui::Key::F, egui::Key::G, egui::Key::H, egui::Key::I, egui::Key::J,
-                    egui::Key::K, egui::Key::L, egui::Key::M, egui::Key::N, egui::Key::O,
-                    egui::Key::P, egui::Key::Q, egui::Key::R, egui::Key::S, egui::Key::T,
-                    egui::Key::U, egui::Key::V, egui::Key::W, egui::Key::X, egui::Key::Y,
-                    egui::Key::Z, egui::Key::Num0, egui::Key::Num1, egui::Key::Num2,
-                    egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
-                    egui::Key::Num7, egui::Key::Num8, egui::Key::Num9, egui::Key::F1,
-                    egui::Key::F2, egui::Key::F3, egui::Key::F4, egui::Key::F5, egui::Key::F6,
-                    egui::Key::F7, egui::Key::F8, egui::Key::F9, egui::Key::F10, egui::Key::F11,
-                    egui::Key::F12, egui::Key::Space, egui::Key::Enter, egui::Key::Tab,
-                    egui::Key::Backspace, egui::Key::Insert, egui::Key::Delete, egui::Key::Home,
-                    egui::Key::End, egui::Key::PageUp, egui::Key::PageDown, egui::Key::ArrowUp,
-                    egui::Key::ArrowDown, egui::Key::ArrowLeft, egui::Key::ArrowRight,
-                ] {
-                    if i.key_pressed(*k) {
-                        return Some(*k);
+                i.keys_pressed.iter().find_map(|&k| {
+                    if k == egui::Key::Escape {
+                        Some(k)
+                    } else if egui_to_rdev_key(k).is_some() {
+                        Some(k)
+                    } else {
+                        None
                     }
-                }
-                None
+                })
             });
 
             if let Some(k) = key {
