@@ -12,7 +12,7 @@ use std::time::Duration;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::ProcessStatus::*;
-use windows::Win32::System::SystemServices::*;
+use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -838,7 +838,7 @@ impl KeyBindApp {
                 }
 
                 // Minimal lock scope - copy only needed data
-                let (feature_action, should_block) = {
+                let (feature_action, _should_block) = {
                     let s = state_clone_hk.lock().unwrap();
 
                     if let EventType::KeyPress(key) = event.event_type {
