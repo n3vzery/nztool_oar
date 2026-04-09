@@ -4,10 +4,11 @@ use eframe::egui;
 use log::{error, warn};
 use rdev::{grab, Event, EventType, Key};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::ProcessStatus::*;
@@ -24,6 +25,22 @@ static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static KEYBOARD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// Focus cache to reduce WinAPI calls
+static LAST_FOCUS_CHECK: AtomicU64 = AtomicU64::new(0);
+static CACHED_FOCUS_VALUE: AtomicBool = AtomicBool::new(false);
+
+// Worker thread messages for feature execution
+enum WorkerMessage {
+    ShiftToggle,
+    NoFallDamage,
+    HackingPostMessage { x: i32, y: i32, w: i32, h: i32, offset_y: i32 },
+    HackingPostMessage2 { x: i32, y: i32, w: i32, h: i32, offset_y: i32 },
+    TipsSkip { x: i32, w: i32, y: i32 },
+    Restart { x: i32, w: i32, y: i32 },
+    GrabNoGun,
+    HoldItemBug,
+}
 
 // InputState provides a clean API over the static variables
 #[derive(Clone)]
@@ -174,36 +191,57 @@ define_keys!(ConfigKey {
 
 // Helper to check if the game window is currently focused
 fn is_game_focused() -> bool {
-    unsafe {
+    // Cache with 100ms TTL to reduce WinAPI calls
+    const FOCUS_CACHE_TTL_MS: u64 = 100;
+
+    let now = {
+        // Get current time in milliseconds using WinAPI
+        let elapsed = unsafe { GetTickCount64() };
+        elapsed
+    };
+
+    let last = LAST_FOCUS_CHECK.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < FOCUS_CACHE_TTL_MS {
+        return CACHED_FOCUS_VALUE.load(Ordering::Relaxed);
+    }
+
+    let result = unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
-            return false;
-        }
-
-        let mut process_id = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut process_id));
-        if process_id == 0 {
-            return false;
-        }
-
-        let handle = OpenProcess(
-            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-            false,
-            process_id,
-        );
-        if let Ok(h) = handle {
-            let mut buffer = [0u8; 260];
-            let len = K32GetModuleBaseNameA(h, None, &mut buffer);
-            if CloseHandle(h).is_err() {
-                warn!("CloseHandle failed in is_game_focused");
+            false
+        } else {
+            let mut process_id = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+            if process_id == 0 {
+                false
+            } else {
+                let handle = OpenProcess(
+                    PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+                    false,
+                    process_id,
+                );
+                if let Ok(h) = handle {
+                    let mut buffer = [0u8; 260];
+                    let len = K32GetModuleBaseNameA(h, None, &mut buffer);
+                    if CloseHandle(h).is_err() {
+                        warn!("CloseHandle failed in is_game_focused");
+                    }
+                    if len > 0 {
+                        let name = std::str::from_utf8(&buffer[..len as usize]).unwrap_or("");
+                        name.eq_ignore_ascii_case("OAR-Win64-Shipping.exe")
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
             }
-            if len > 0 {
-                let name = std::str::from_utf8(&buffer[..len as usize]).unwrap_or("");
-                return name.eq_ignore_ascii_case("OAR-Win64-Shipping.exe");
-            }
         }
-        false
-    }
+    };
+
+    CACHED_FOCUS_VALUE.store(result, Ordering::Relaxed);
+    LAST_FOCUS_CHECK.store(now, Ordering::Relaxed);
+    result
 }
 
 // --- CONSTANTS ---
@@ -218,9 +256,10 @@ const AUTO_CLICKER_MIN_DELAY_MS: u32 = 1;
 const AUTO_CLICKER_MAX_DELAY_MS: u32 = 50;
 
 // Helper to pack coordinates into LPARAM safely for PostMessage
+// Handles negative coordinates by casting through i16 (16-bit signed)
 fn pack_lparam(x: i32, y: i32) -> isize {
-    let low = (x as u32 & 0xFFFF) as isize;
-    let high = ((y as u32 & 0xFFFF) << 16) as isize;
+    let low = ((x as i16) as u16 as u32) as isize;
+    let high = (((y as i16) as u16 as u32) << 16) as isize;
     high | low
 }
 
@@ -745,6 +784,41 @@ impl KeyBindApp {
         });
 
         let state_clone_hk = state.clone();
+
+        // Create worker thread for feature execution
+        let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
+        let worker_state = state.clone();
+        thread::spawn(move || {
+            while let Ok(msg) = worker_rx.recv() {
+                match msg {
+                    WorkerMessage::ShiftToggle => {
+                        worker_state.lock().unwrap().toggle_shift();
+                    }
+                    WorkerMessage::NoFallDamage => {
+                        Self::no_fall_damage();
+                    }
+                    WorkerMessage::HackingPostMessage { x, y, w, h, offset_y } => {
+                        Self::hacking_method_post_message(x, y, w, h, offset_y);
+                    }
+                    WorkerMessage::HackingPostMessage2 { x, y, w, h, offset_y } => {
+                        Self::hacking_method2(x, y, w, h, offset_y);
+                    }
+                    WorkerMessage::TipsSkip { x, w, y } => {
+                        Self::tips_skip(x, w, y);
+                    }
+                    WorkerMessage::Restart { x, w, y } => {
+                        Self::restart(x, w, y);
+                    }
+                    WorkerMessage::GrabNoGun => {
+                        Self::grab_no_gun();
+                    }
+                    WorkerMessage::HoldItemBug => {
+                        Self::hold_item_bug();
+                    }
+                }
+            }
+        });
+
         thread::spawn(move || {
             // grab is only needed for hotkey processing (Key)
             let callback = move |event: Event| {
@@ -762,87 +836,78 @@ impl KeyBindApp {
                     return Some(event);
                 }
 
-                // Block and wait for lock to ensure no hotkey is missed
-                let s = state_clone_hk.lock().unwrap();
+                // Minimal lock scope - copy only needed data
+                let (feature_action, should_block) = {
+                    let s = state_clone_hk.lock().unwrap();
 
-                if let EventType::KeyPress(key) = event.event_type {
-                    if let Some(feature) = s
-                        .features
-                        .iter()
-                        .find(|f| f.enabled && f.rdev_key == Some(key))
-                    {
-                        let feature_id = feature.id;
-                        let x = s.x_offset;
-                        let y = s.y_offset;
-                        let w = s.width;
-                        let h = s.height;
-                        let tips_y = s.tips_skip_y_offset;
-                        let restart_y = s.restart_y_offset;
-                        let hack_y = s.hacking_y_offset;
-                        let hack2_y = s.hacking2_y_offset;
-                        let state_clone = state_clone_hk.clone();
+                    if let EventType::KeyPress(key) = event.event_type {
+                        if let Some(feature) = s
+                            .features
+                            .iter()
+                            .find(|f| f.enabled && f.rdev_key == Some(key))
+                        {
+                            let feature_id = feature.id;
+                            let x = s.x_offset;
+                            let y = s.y_offset;
+                            let w = s.width;
+                            let h = s.height;
+                            let tips_y = s.tips_skip_y_offset;
+                            let restart_y = s.restart_y_offset;
+                            let hack_y = s.hacking_y_offset;
+                            let hack2_y = s.hacking2_y_offset;
 
-                        if feature_id == FeatureId::AutoClicker {
-                            // Toggle global atomic variable
-                            let _ = input_hotkey.toggle_autoclicker();
-                            return None; // Block the bind key itself
+                            // Handle toggle features immediately
+                            if feature_id == FeatureId::AutoClicker {
+                                let _ = input_hotkey.toggle_autoclicker();
+                                return None;
+                            }
+
+                            if feature_id == FeatureId::Bhop {
+                                let _ = input_hotkey.toggle_bhop();
+                                return None;
+                            }
+
+                            // Build worker message for other features
+                            let action = match feature_id {
+                                FeatureId::ShiftToggle => Some(WorkerMessage::ShiftToggle),
+                                FeatureId::NoFallDamage => Some(WorkerMessage::NoFallDamage),
+                                FeatureId::HackingPostMessage => {
+                                    Some(WorkerMessage::HackingPostMessage {
+                                        x, y, w, h, offset_y: hack_y
+                                    })
+                                }
+                                FeatureId::HackingPostMessage2 => {
+                                    Some(WorkerMessage::HackingPostMessage2 {
+                                        x, y, w, h, offset_y: hack2_y
+                                    })
+                                }
+                                FeatureId::TipsSkip => {
+                                    Some(WorkerMessage::TipsSkip { x, w, y: y + tips_y })
+                                }
+                                FeatureId::Restart => {
+                                    Some(WorkerMessage::Restart { x, w, y: y + restart_y })
+                                }
+                                FeatureId::GrabNoGun => Some(WorkerMessage::GrabNoGun),
+                                FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
+                                _ => None,
+                            };
+
+                            (action, true)
+                        } else {
+                            (None, false)
                         }
-
-                        if feature_id == FeatureId::Bhop {
-                            // Toggle global atomic variable
-                            let _ = input_hotkey.toggle_bhop();
-                            return None; // Block the bind key itself
-                        }
-
-                        // Offload all feature logic to separate threads to avoid blocking the rdev hook thread.
-                        // Blocking the hook thread or calling SendInput synchronously can cause hangs/deadlocks.
-                        match feature_id {
-                            FeatureId::ShiftToggle => {
-                                drop(s);
-                                thread::spawn(move || {
-                                    state_clone.lock().unwrap().toggle_shift();
-                                });
-                            }
-                            FeatureId::NoFallDamage => {
-                                thread::spawn(move || {
-                                    Self::no_fall_damage();
-                                });
-                            }
-                            FeatureId::HackingPostMessage => {
-                                thread::spawn(move || {
-                                    Self::hacking_method_post_message(x, y, w, h, hack_y);
-                                });
-                            }
-                            FeatureId::HackingPostMessage2 => {
-                                thread::spawn(move || {
-                                    Self::hacking_method2(x, y, w, h, hack2_y);
-                                });
-                            }
-                            FeatureId::TipsSkip => {
-                                thread::spawn(move || {
-                                    Self::tips_skip(x, w, y + tips_y);
-                                });
-                            }
-                            FeatureId::Restart => {
-                                thread::spawn(move || {
-                                    Self::restart(x, w, y + restart_y);
-                                });
-                            }
-                            FeatureId::GrabNoGun => {
-                                thread::spawn(move || {
-                                    Self::grab_no_gun();
-                                });
-                            }
-                            FeatureId::HoldItemBug => {
-                                thread::spawn(move || {
-                                    Self::hold_item_bug();
-                                });
-                            }
-                            _ => {}
-                        }
-                        return None;
+                    } else {
+                        (None, false)
                     }
+                }; // Lock released here
+
+                // Send to worker thread without holding lock
+                if let Some(action) = feature_action {
+                    // Use try_send to avoid blocking if channel is full
+                    let _ = worker_tx.try_send(action);
+                    return None;
                 }
+
                 Some(event)
             };
 
@@ -1038,17 +1103,34 @@ impl eframe::App for KeyBindApp {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let mut s = self.state.lock().unwrap();
         if let Some(idx) = s.features.iter().position(|f| f.selecting) {
+            // Use egui's optimized key_pressed method instead of manual iteration
             let key = ctx.input(|i| {
-                i.events.iter().find_map(|e| {
-                    if let egui::Event::Key {
-                        key, pressed: true, ..
-                    } = e
-                    {
-                        Some(*key)
-                    } else {
-                        None
+                // Check for Escape first
+                if i.key_pressed(egui::Key::Escape) {
+                    return Some(egui::Key::Escape);
+                }
+                // Check other keys in order
+                for k in &[
+                    egui::Key::A, egui::Key::B, egui::Key::C, egui::Key::D, egui::Key::E,
+                    egui::Key::F, egui::Key::G, egui::Key::H, egui::Key::I, egui::Key::J,
+                    egui::Key::K, egui::Key::L, egui::Key::M, egui::Key::N, egui::Key::O,
+                    egui::Key::P, egui::Key::Q, egui::Key::R, egui::Key::S, egui::Key::T,
+                    egui::Key::U, egui::Key::V, egui::Key::W, egui::Key::X, egui::Key::Y,
+                    egui::Key::Z, egui::Key::Num0, egui::Key::Num1, egui::Key::Num2,
+                    egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
+                    egui::Key::Num7, egui::Key::Num8, egui::Key::Num9, egui::Key::F1,
+                    egui::Key::F2, egui::Key::F3, egui::Key::F4, egui::Key::F5, egui::Key::F6,
+                    egui::Key::F7, egui::Key::F8, egui::Key::F9, egui::Key::F10, egui::Key::F11,
+                    egui::Key::F12, egui::Key::Space, egui::Key::Enter, egui::Key::Tab,
+                    egui::Key::Backspace, egui::Key::Insert, egui::Key::Delete, egui::Key::Home,
+                    egui::Key::End, egui::Key::PageUp, egui::Key::PageDown, egui::Key::ArrowUp,
+                    egui::Key::ArrowDown, egui::Key::ArrowLeft, egui::Key::ArrowRight,
+                ] {
+                    if i.key_pressed(*k) {
+                        return Some(*k);
                     }
-                })
+                }
+                None
             });
 
             if let Some(k) = key {
