@@ -2076,9 +2076,10 @@ dependencies = [
 
 [[package]]
 name = "nztool_oar"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "eframe",
+ "log",
  "rdev",
  "serde",
  "serde_json",
