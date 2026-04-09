@@ -1114,16 +1114,12 @@ impl eframe::App for KeyBindApp {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let mut s = self.state.lock().unwrap();
         if let Some(idx) = s.features.iter().position(|f| f.selecting) {
-            // Use egui's optimized key_pressed method instead of manual iteration
+            // Check for key press events using events.iter()
             let key = ctx.input(|i| {
-                i.keys_pressed.iter().find_map(|&k| {
-                    if k == egui::Key::Escape {
-                        Some(k)
-                    } else if egui_to_rdev_key(k).is_some() {
-                        Some(k)
-                    } else {
-                        None
-                    }
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, .. }
+                        if *key == egui::Key::Escape || egui_to_rdev_key(*key).is_some() => Some(*key),
+                    _ => None,
                 })
             });
 
