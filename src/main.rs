@@ -8,10 +8,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::ProcessStatus::*;
+use windows::Win32::System::SystemServices::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -903,8 +904,8 @@ impl KeyBindApp {
 
                 // Send to worker thread without holding lock
                 if let Some(action) = feature_action {
-                    // Use try_send to avoid blocking if channel is full
-                    let _ = worker_tx.try_send(action);
+                    // Use send instead of try_send (std::sync::mpsc::Sender doesn't have try_send)
+                    let _ = worker_tx.send(action);
                     return None;
                 }
 
