@@ -18,25 +18,45 @@ use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-// Global input state - replaces static variables
+// Global input state - consolidated structure
 // Kept as statics because Windows hooks require them (hooks run in system context)
-static REAL_LMB_DOWN: AtomicBool = AtomicBool::new(false);
-static REAL_SPACE_DOWN: AtomicBool = AtomicBool::new(false);
-static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
-static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-static KEYBOARD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
-static REAL_CTRL_DOWN: AtomicBool = AtomicBool::new(false);
-static REAL_SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
-static REAL_ALT_DOWN: AtomicBool = AtomicBool::new(false);
-static REAL_CAPSLOCK_DOWN: AtomicBool = AtomicBool::new(false);
+struct GlobalInputState {
+    lmb_down: AtomicBool,
+    space_down: AtomicBool,
+    autoclicker_active: AtomicBool,
+    bhop_active: AtomicBool,
+    ctrl_down: AtomicBool,
+    shift_down: AtomicBool,
+    alt_down: AtomicBool,
+    capslock_down: AtomicBool,
+    mouse_hook_thread_id: AtomicU32,
+    keyboard_hook_thread_id: AtomicU32,
+    last_focus_check: AtomicU64,
+    cached_focus_value: AtomicBool,
+    rdev_shutdown: AtomicBool,
+}
 
-// Focus cache to reduce WinAPI calls
-static LAST_FOCUS_CHECK: AtomicU64 = AtomicU64::new(0);
-static CACHED_FOCUS_VALUE: AtomicBool = AtomicBool::new(false);
+impl GlobalInputState {
+    const fn new() -> Self {
+        Self {
+            lmb_down: AtomicBool::new(false),
+            space_down: AtomicBool::new(false),
+            autoclicker_active: AtomicBool::new(false),
+            bhop_active: AtomicBool::new(false),
+            ctrl_down: AtomicBool::new(false),
+            shift_down: AtomicBool::new(false),
+            alt_down: AtomicBool::new(false),
+            capslock_down: AtomicBool::new(false),
+            mouse_hook_thread_id: AtomicU32::new(0),
+            keyboard_hook_thread_id: AtomicU32::new(0),
+            last_focus_check: AtomicU64::new(0),
+            cached_focus_value: AtomicBool::new(false),
+            rdev_shutdown: AtomicBool::new(false),
+        }
+    }
+}
 
-// Graceful shutdown flag for rdev::grab thread
-static RDEV_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+static GLOBAL_STATE: GlobalInputState = GlobalInputState::new();
 
 // Worker thread messages for feature execution
 enum WorkerMessage {
@@ -72,79 +92,96 @@ enum WorkerMessage {
     HoldItemBug,
 }
 
-// InputState provides a clean API over the static variables
+// InputState provides a clean API over the global state
 #[derive(Clone)]
 struct InputState;
 
 impl InputState {
     fn is_lmb_down(&self) -> bool {
-        REAL_LMB_DOWN.load(Ordering::SeqCst)
+        GLOBAL_STATE.lmb_down.load(Ordering::SeqCst)
     }
 
     #[allow(dead_code)]
     fn set_lmb_down(&self, down: bool) {
-        REAL_LMB_DOWN.store(down, Ordering::SeqCst);
+        GLOBAL_STATE.lmb_down.store(down, Ordering::SeqCst);
     }
 
     #[allow(dead_code)]
     fn set_space_down(&self, down: bool) {
-        REAL_SPACE_DOWN.store(down, Ordering::SeqCst);
+        GLOBAL_STATE.space_down.store(down, Ordering::SeqCst);
     }
 
     fn is_space_down(&self) -> bool {
-        REAL_SPACE_DOWN.load(Ordering::SeqCst)
+        GLOBAL_STATE.space_down.load(Ordering::SeqCst)
     }
 
     fn toggle_autoclicker(&self) -> bool {
-        let current = AUTOCLICKER_ACTIVE.load(Ordering::SeqCst);
-        AUTOCLICKER_ACTIVE.store(!current, Ordering::SeqCst);
+        let current = GLOBAL_STATE.autoclicker_active.load(Ordering::SeqCst);
+        GLOBAL_STATE
+            .autoclicker_active
+            .store(!current, Ordering::SeqCst);
         !current
     }
 
     fn is_autoclicker_active(&self) -> bool {
-        AUTOCLICKER_ACTIVE.load(Ordering::SeqCst)
+        GLOBAL_STATE.autoclicker_active.load(Ordering::SeqCst)
     }
 
     fn toggle_bhop(&self) -> bool {
-        let current = BHOP_ACTIVE.load(Ordering::SeqCst);
-        BHOP_ACTIVE.store(!current, Ordering::SeqCst);
+        let current = GLOBAL_STATE.bhop_active.load(Ordering::SeqCst);
+        GLOBAL_STATE.bhop_active.store(!current, Ordering::SeqCst);
         !current
     }
 
     fn is_bhop_active(&self) -> bool {
-        BHOP_ACTIVE.load(Ordering::SeqCst)
+        GLOBAL_STATE.bhop_active.load(Ordering::SeqCst)
     }
 
     fn is_ctrl_down(&self) -> bool {
-        REAL_CTRL_DOWN.load(Ordering::SeqCst)
+        GLOBAL_STATE.ctrl_down.load(Ordering::SeqCst)
     }
 
     fn is_shift_down(&self) -> bool {
-        REAL_SHIFT_DOWN.load(Ordering::SeqCst)
+        GLOBAL_STATE.shift_down.load(Ordering::SeqCst)
     }
 
     fn is_alt_down(&self) -> bool {
-        REAL_ALT_DOWN.load(Ordering::SeqCst)
+        GLOBAL_STATE.alt_down.load(Ordering::SeqCst)
     }
 
     fn is_capslock_down(&self) -> bool {
-        REAL_CAPSLOCK_DOWN.load(Ordering::SeqCst)
+        GLOBAL_STATE.capslock_down.load(Ordering::SeqCst)
     }
 
     fn set_mouse_hook_thread_id(&self, id: u32) {
-        MOUSE_HOOK_THREAD_ID.store(id, Ordering::SeqCst);
+        GLOBAL_STATE
+            .mouse_hook_thread_id
+            .store(id, Ordering::SeqCst);
     }
 
     fn get_mouse_hook_thread_id(&self) -> u32 {
-        MOUSE_HOOK_THREAD_ID.load(Ordering::SeqCst)
+        GLOBAL_STATE.mouse_hook_thread_id.load(Ordering::SeqCst)
     }
 
     fn set_keyboard_hook_thread_id(&self, id: u32) {
-        KEYBOARD_HOOK_THREAD_ID.store(id, Ordering::SeqCst);
+        GLOBAL_STATE
+            .keyboard_hook_thread_id
+            .store(id, Ordering::SeqCst);
     }
 
     fn get_keyboard_hook_thread_id(&self) -> u32 {
-        KEYBOARD_HOOK_THREAD_ID.load(Ordering::SeqCst)
+        GLOBAL_STATE.keyboard_hook_thread_id.load(Ordering::SeqCst)
+    }
+}
+
+// Helper function to safely lock mutex and handle poisoned state
+fn safe_lock<T>(mutex: &Arc<Mutex<T>>) -> Option<std::sync::MutexGuard<'_, T>> {
+    match mutex.lock() {
+        Ok(guard) => Some(guard),
+        Err(poisoned) => {
+            error!("Mutex poisoned, recovering with poisoned data");
+            Some(poisoned.into_inner())
+        }
     }
 }
 
@@ -251,13 +288,13 @@ fn is_game_focused() -> bool {
 
     let now = {
         // Get current time in milliseconds using WinAPI
-        let elapsed = unsafe { GetTickCount64() };
-        elapsed
+        
+        unsafe { GetTickCount64() }
     };
 
-    let last = LAST_FOCUS_CHECK.load(Ordering::Relaxed);
+    let last = GLOBAL_STATE.last_focus_check.load(Ordering::Relaxed);
     if now.saturating_sub(last) < FOCUS_CACHE_TTL_MS {
-        return CACHED_FOCUS_VALUE.load(Ordering::Relaxed);
+        return GLOBAL_STATE.cached_focus_value.load(Ordering::Relaxed);
     }
 
     let result = unsafe {
@@ -294,8 +331,10 @@ fn is_game_focused() -> bool {
         }
     };
 
-    CACHED_FOCUS_VALUE.store(result, Ordering::Relaxed);
-    LAST_FOCUS_CHECK.store(now, Ordering::Relaxed);
+    GLOBAL_STATE
+        .cached_focus_value
+        .store(result, Ordering::Relaxed);
+    GLOBAL_STATE.last_focus_check.store(now, Ordering::Relaxed);
     result
 }
 
@@ -331,9 +370,9 @@ unsafe extern "system" fn low_level_mouse_proc(
             // We ignore such events to prevent self-triggering.
             if (ms_ll.flags & LLMHF_INJECTED) == 0 {
                 if w_param.0 as u32 == WM_LBUTTONDOWN {
-                    REAL_LMB_DOWN.store(true, Ordering::SeqCst);
+                    GLOBAL_STATE.lmb_down.store(true, Ordering::SeqCst);
                 } else if w_param.0 as u32 == WM_LBUTTONUP {
-                    REAL_LMB_DOWN.store(false, Ordering::SeqCst);
+                    GLOBAL_STATE.lmb_down.store(false, Ordering::SeqCst);
                 }
             }
         }
@@ -360,45 +399,45 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 // VK_SPACE = 0x20
                 if kb_ll.vkCode == 0x20 {
                     if is_key_down {
-                        REAL_SPACE_DOWN.store(true, Ordering::SeqCst);
+                        GLOBAL_STATE.space_down.store(true, Ordering::SeqCst);
                     } else if is_key_up {
-                        REAL_SPACE_DOWN.store(false, Ordering::SeqCst);
+                        GLOBAL_STATE.space_down.store(false, Ordering::SeqCst);
                     }
                 }
 
                 // VK_SHIFT = 0x10, VK_LSHIFT = 0xA0, VK_RSHIFT = 0xA1
                 if kb_ll.vkCode == 0x10 || kb_ll.vkCode == 0xA0 || kb_ll.vkCode == 0xA1 {
                     if is_key_down {
-                        REAL_SHIFT_DOWN.store(true, Ordering::SeqCst);
+                        GLOBAL_STATE.shift_down.store(true, Ordering::SeqCst);
                     } else if is_key_up {
-                        REAL_SHIFT_DOWN.store(false, Ordering::SeqCst);
+                        GLOBAL_STATE.shift_down.store(false, Ordering::SeqCst);
                     }
                 }
 
                 // VK_CONTROL = 0x11, VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3
                 if kb_ll.vkCode == 0x11 || kb_ll.vkCode == 0xA2 || kb_ll.vkCode == 0xA3 {
                     if is_key_down {
-                        REAL_CTRL_DOWN.store(true, Ordering::SeqCst);
+                        GLOBAL_STATE.ctrl_down.store(true, Ordering::SeqCst);
                     } else if is_key_up {
-                        REAL_CTRL_DOWN.store(false, Ordering::SeqCst);
+                        GLOBAL_STATE.ctrl_down.store(false, Ordering::SeqCst);
                     }
                 }
 
                 // VK_MENU = 0x12, VK_LMENU = 0xA4, VK_RMENU = 0xA5
                 if kb_ll.vkCode == 0x12 || kb_ll.vkCode == 0xA4 || kb_ll.vkCode == 0xA5 {
                     if is_key_down {
-                        REAL_ALT_DOWN.store(true, Ordering::SeqCst);
+                        GLOBAL_STATE.alt_down.store(true, Ordering::SeqCst);
                     } else if is_key_up {
-                        REAL_ALT_DOWN.store(false, Ordering::SeqCst);
+                        GLOBAL_STATE.alt_down.store(false, Ordering::SeqCst);
                     }
                 }
 
                 // VK_CAPITAL = 0x14
                 if kb_ll.vkCode == 0x14 {
                     if is_key_down {
-                        REAL_CAPSLOCK_DOWN.store(true, Ordering::SeqCst);
+                        GLOBAL_STATE.capslock_down.store(true, Ordering::SeqCst);
                     } else if is_key_up {
-                        REAL_CAPSLOCK_DOWN.store(false, Ordering::SeqCst);
+                        GLOBAL_STATE.capslock_down.store(false, Ordering::SeqCst);
                     }
                 }
             }
@@ -491,8 +530,8 @@ struct AppState {
 fn get_config_path() -> std::path::PathBuf {
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
     let config_dir = std::path::PathBuf::from(appdata).join("nzconfig");
-    let config_file = config_dir.join("config.json");
-    config_file
+    
+    config_dir.join("config.json")
 }
 
 // Convert rdev::Key to ConfigKey then to string
@@ -803,7 +842,7 @@ struct KeyBindApp {
 impl Drop for KeyBindApp {
     fn drop(&mut self) {
         // Signal rdev::grab thread to shut down gracefully
-        RDEV_SHUTDOWN.store(true, Ordering::SeqCst);
+        GLOBAL_STATE.rdev_shutdown.store(true, Ordering::SeqCst);
 
         let mouse_thread_id = InputState.get_mouse_hook_thread_id();
         if mouse_thread_id != 0 {
@@ -853,9 +892,23 @@ impl KeyBindApp {
                     }
                 };
                 let mut msg = MSG::default();
-                while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+                loop {
+                    // Check shutdown flag before blocking on GetMessageW
+                    if GLOBAL_STATE.rdev_shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    match GetMessageW(&mut msg, HWND::default(), 0, 0) {
+                        BOOL(0) => break, // WM_QUIT received
+                        BOOL(-1) => {
+                            error!("GetMessageW failed in mouse hook");
+                            break;
+                        }
+                        _ => {
+                            let _ = TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        }
+                    }
                 }
                 if UnhookWindowsHookEx(hook).is_err() {
                     error!("UnhookWindowsHookEx failed for mouse hook");
@@ -882,9 +935,23 @@ impl KeyBindApp {
                     }
                 };
                 let mut msg = MSG::default();
-                while GetMessageW(&mut msg, HWND::default(), 0, 0).into() {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+                loop {
+                    // Check shutdown flag before blocking on GetMessageW
+                    if GLOBAL_STATE.rdev_shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    match GetMessageW(&mut msg, HWND::default(), 0, 0) {
+                        BOOL(0) => break, // WM_QUIT received
+                        BOOL(-1) => {
+                            error!("GetMessageW failed in keyboard hook");
+                            break;
+                        }
+                        _ => {
+                            let _ = TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        }
+                    }
                 }
                 if UnhookWindowsHookEx(hook).is_err() {
                     error!("UnhookWindowsHookEx failed for keyboard hook");
@@ -925,42 +992,37 @@ impl KeyBindApp {
                 let capslock_down = input_mod_poll.is_capslock_down();
 
                 if is_game_focused() {
-                    let s = state_clone_mod.lock().unwrap();
-                    if ctrl_down && !prev_ctrl {
-                        if let Some(f) = s
+                    let Some(s) = safe_lock(&state_clone_mod) else {
+                        error!("Failed to lock state in modifier polling thread");
+                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                        continue;
+                    };
+                    if ctrl_down && !prev_ctrl
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::ControlLeft))
-                        {
-                            if f.id == FeatureId::CtrlToggle {
+                            && f.id == FeatureId::CtrlToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::CtrlToggle);
                             }
-                        }
-                    }
-                    if shift_down && !prev_shift {
-                        if let Some(f) = s
+                    if shift_down && !prev_shift
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::ShiftLeft))
-                        {
-                            if f.id == FeatureId::ShiftToggle {
+                            && f.id == FeatureId::ShiftToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::ShiftToggle);
                             }
-                        }
-                    }
-                    if alt_down && !prev_alt {
-                        if let Some(f) = s
+                    if alt_down && !prev_alt
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::Alt))
-                        {
-                            if f.id == FeatureId::AltToggle {
+                            && f.id == FeatureId::AltToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
                             }
-                        }
-                    }
-                    if capslock_down && !prev_capslock {
-                        if let Some(f) = s
+                    if capslock_down && !prev_capslock
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::CapsLock))
@@ -973,7 +1035,6 @@ impl KeyBindApp {
                                 let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
                             }
                         }
-                    }
                 }
 
                 prev_ctrl = ctrl_down;
@@ -988,7 +1049,11 @@ impl KeyBindApp {
             loop {
                 // Read the global autoclicker mode and check if the feature is enabled in UI
                 let (enabled, delay_ms) = {
-                    let s = state_clone_ac.lock().unwrap();
+                    let Some(s) = safe_lock(&state_clone_ac) else {
+                        error!("Failed to lock state in autoclicker thread");
+                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                        continue;
+                    };
                     let enabled = s
                         .features
                         .iter()
@@ -1002,10 +1067,10 @@ impl KeyBindApp {
                         send_mouse_click();
                         thread::sleep(Duration::from_millis(delay_ms as u64));
                     } else {
-                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS as u64));
+                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                     }
                 } else {
-                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS as u64));
+                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                 }
             }
         });
@@ -1016,13 +1081,19 @@ impl KeyBindApp {
             while let Ok(msg) = worker_rx.recv() {
                 match msg {
                     WorkerMessage::ShiftToggle => {
-                        worker_state.lock().unwrap().toggle_shift();
+                        if let Some(mut s) = safe_lock(&worker_state) {
+                            s.toggle_shift();
+                        }
                     }
                     WorkerMessage::CtrlToggle => {
-                        worker_state.lock().unwrap().toggle_ctrl();
+                        if let Some(mut s) = safe_lock(&worker_state) {
+                            s.toggle_ctrl();
+                        }
                     }
                     WorkerMessage::AltToggle => {
-                        worker_state.lock().unwrap().toggle_alt();
+                        if let Some(mut s) = safe_lock(&worker_state) {
+                            s.toggle_alt();
+                        }
                     }
                     WorkerMessage::NoFallDamage => {
                         Self::no_fall_damage();
@@ -1065,7 +1136,7 @@ impl KeyBindApp {
         thread::spawn(move || {
             let callback = move |event: Event| {
                 // Gracefully shut down if requested
-                if RDEV_SHUTDOWN.load(Ordering::SeqCst) {
+                if GLOBAL_STATE.rdev_shutdown.load(Ordering::SeqCst) {
                     return None;
                 }
 
@@ -1085,7 +1156,10 @@ impl KeyBindApp {
 
                 // Minimal lock scope - copy only needed data
                 let (feature_action, _should_block) = {
-                    let s = state_clone_hk.lock().unwrap();
+                    let Some(s) = safe_lock(&state_clone_hk) else {
+                        error!("Failed to lock state in hotkey callback");
+                        return Some(event);
+                    };
 
                     if let EventType::KeyPress(key) = event.event_type {
                         if let Some(feature) = s
@@ -1204,9 +1278,7 @@ impl KeyBindApp {
             }
 
             // 5. Instant Move (Still screen-relative)
-            if SetCursorPos(target_x, target_y).is_err() {
-                warn!("SetCursorPos failed in hacking method");
-            }
+            set_cursor_pos_safe(target_x, target_y);
 
             // 6. Direct Message Blast (Packed safely)
             let l_param = pack_lparam(pt.x, pt.y);
@@ -1231,9 +1303,7 @@ impl KeyBindApp {
             }
 
             // 7. Move to top and click once
-            if SetCursorPos(center_x, y).is_err() {
-                warn!("SetCursorPos failed after hacking click");
-            }
+            set_cursor_pos_safe(center_x, y);
             send_mouse_click();
         }
     }
@@ -1265,9 +1335,7 @@ impl KeyBindApp {
             }
 
             // 5. Instant Move
-            if SetCursorPos(target_x, target_y).is_err() {
-                warn!("SetCursorPos failed in hacking method 2");
-            }
+            set_cursor_pos_safe(target_x, target_y);
 
             // 6. Direct Message Blast
             let l_param = pack_lparam(pt.x, pt.y);
@@ -1317,8 +1385,10 @@ impl KeyBindApp {
     fn grab_no_gun() {
         unsafe {
             // Scroll wheel up (WHEEL_DELTA = 120)
-            let mut wheel_input = INPUT::default();
-            wheel_input.r#type = INPUT_MOUSE;
+            let mut wheel_input = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
             wheel_input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
             wheel_input.Anonymous.mi.mouseData = 120;
             if SendInput(&[wheel_input], std::mem::size_of::<INPUT>() as i32) == 0 {
@@ -1345,8 +1415,10 @@ impl KeyBindApp {
 
     fn send_mouse_state(down: bool) {
         unsafe {
-            let mut input = INPUT::default();
-            input.r#type = INPUT_MOUSE;
+            let mut input = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
             input.Anonymous.mi.dwFlags = if down {
                 MOUSEEVENTF_LEFTDOWN
             } else {
@@ -1361,7 +1433,10 @@ impl KeyBindApp {
 
 impl eframe::App for KeyBindApp {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        let mut s = self.state.lock().unwrap();
+        let Some(mut s) = safe_lock(&self.state) else {
+            error!("Failed to lock state in UI update");
+            return;
+        };
         if let Some(idx) = s.features.iter().position(|f| f.selecting) {
             // Request continuous repaint with short interval while selecting to catch modifier key state changes
             ctx.request_repaint_after(Duration::from_millis(16)); // ~60 FPS
@@ -1377,11 +1452,10 @@ impl eframe::App for KeyBindApp {
                     } = event
                     {
                         // Only accept regular keys when no modifiers are pressed
-                        if !modifiers.ctrl && !modifiers.shift && !modifiers.alt {
-                            if *key == egui::Key::Escape || egui_to_rdev_key(*key).is_some() {
+                        if !modifiers.ctrl && !modifiers.shift && !modifiers.alt
+                            && (*key == egui::Key::Escape || egui_to_rdev_key(*key).is_some()) {
                                 return Some(*key);
                             }
-                        }
                     }
                 }
                 None
@@ -1493,8 +1567,7 @@ impl eframe::App for KeyBindApp {
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
                             .clicked()
-                        {
-                            if s.features[i].rdev_key.is_some() {
+                            && s.features[i].rdev_key.is_some() {
                                 s.features[i].enabled = !s.features[i].enabled;
                                 if !s.features[i].enabled
                                     && s.features[i].id == FeatureId::ShiftToggle
@@ -1504,7 +1577,6 @@ impl eframe::App for KeyBindApp {
                                 // Save config when enable/disable state changes
                                 let _ = s.save_config();
                             }
-                        }
 
                         ui.end_row(); // Move to the next row in the grid
                     }
@@ -1599,12 +1671,29 @@ impl eframe::App for KeyBindApp {
     }
 }
 
-fn move_mouse(x: i32, y: i32) {
-    unsafe {
-        if SetCursorPos(x, y).is_err() {
-            error!("Failed to move cursor to ({}, {})", x, y);
+// Helper function to safely set cursor position with retry logic
+fn set_cursor_pos_safe(x: i32, y: i32) -> bool {
+    const MAX_RETRIES: u32 = 3;
+    const RETRY_DELAY_MS: u64 = 5;
+
+    for attempt in 0..MAX_RETRIES {
+        if unsafe { SetCursorPos(x, y).is_ok() } {
+            return true;
+        }
+        if attempt < MAX_RETRIES - 1 {
+            warn!("SetCursorPos attempt {} failed, retrying...", attempt + 1);
+            thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
         }
     }
+    error!(
+        "SetCursorPos failed after {} attempts for ({}, {})",
+        MAX_RETRIES, x, y
+    );
+    false
+}
+
+fn move_mouse(x: i32, y: i32) {
+    set_cursor_pos_safe(x, y);
 }
 
 fn send_mouse_click() {
@@ -1614,13 +1703,17 @@ fn send_mouse_click() {
 fn send_instant_burst_clicks(count: usize) {
     let mut inputs = Vec::with_capacity(count * 2);
     for _ in 0..count {
-        let mut down = INPUT::default();
-        down.r#type = INPUT_MOUSE;
+        let mut down = INPUT {
+            r#type: INPUT_MOUSE,
+            ..Default::default()
+        };
         down.Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
         inputs.push(down);
 
-        let mut up = INPUT::default();
-        up.r#type = INPUT_MOUSE;
+        let mut up = INPUT {
+            r#type: INPUT_MOUSE,
+            ..Default::default()
+        };
         up.Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTUP;
         inputs.push(up);
     }
@@ -1650,8 +1743,10 @@ fn send_key_tap(scan: u16) {
 
 fn send_key_state(scan: u16, down: bool) {
     unsafe {
-        let mut input = INPUT::default();
-        input.r#type = INPUT_KEYBOARD;
+        let mut input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            ..Default::default()
+        };
         input.Anonymous.ki.wScan = scan;
         input.Anonymous.ki.dwFlags = if down {
             KEYEVENTF_SCANCODE
