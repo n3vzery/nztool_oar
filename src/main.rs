@@ -26,6 +26,10 @@ static AUTOCLICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOUSE_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static KEYBOARD_HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static BHOP_ACTIVE: AtomicBool = AtomicBool::new(false);
+static REAL_CTRL_DOWN: AtomicBool = AtomicBool::new(false);
+static REAL_SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
+static REAL_ALT_DOWN: AtomicBool = AtomicBool::new(false);
+static REAL_CAPSLOCK_DOWN: AtomicBool = AtomicBool::new(false);
 
 // Focus cache to reduce WinAPI calls
 static LAST_FOCUS_CHECK: AtomicU64 = AtomicU64::new(0);
@@ -37,11 +41,33 @@ static RDEV_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 // Worker thread messages for feature execution
 enum WorkerMessage {
     ShiftToggle,
+    CtrlToggle,
+    AltToggle,
     NoFallDamage,
-    HackingPostMessage { x: i32, y: i32, w: i32, h: i32, offset_y: i32 },
-    HackingPostMessage2 { x: i32, y: i32, w: i32, h: i32, offset_y: i32 },
-    TipsSkip { x: i32, w: i32, y: i32 },
-    Restart { x: i32, w: i32, y: i32 },
+    HackingPostMessage {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        offset_y: i32,
+    },
+    HackingPostMessage2 {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        offset_y: i32,
+    },
+    TipsSkip {
+        x: i32,
+        w: i32,
+        y: i32,
+    },
+    Restart {
+        x: i32,
+        w: i32,
+        y: i32,
+    },
     GrabNoGun,
     HoldItemBug,
 }
@@ -87,6 +113,22 @@ impl InputState {
 
     fn is_bhop_active(&self) -> bool {
         BHOP_ACTIVE.load(Ordering::SeqCst)
+    }
+
+    fn is_ctrl_down(&self) -> bool {
+        REAL_CTRL_DOWN.load(Ordering::SeqCst)
+    }
+
+    fn is_shift_down(&self) -> bool {
+        REAL_SHIFT_DOWN.load(Ordering::SeqCst)
+    }
+
+    fn is_alt_down(&self) -> bool {
+        REAL_ALT_DOWN.load(Ordering::SeqCst)
+    }
+
+    fn is_capslock_down(&self) -> bool {
+        REAL_CAPSLOCK_DOWN.load(Ordering::SeqCst)
     }
 
     fn set_mouse_hook_thread_id(&self, id: u32) {
@@ -192,6 +234,15 @@ define_keys!(ConfigKey {
     MetaLeft => MetaLeft, MetaRight => MetaRight, CapsLock => CapsLock,
     NumLock => NumLock, ScrollLock => ScrollLock,
 });
+
+// Modifier key type for UI binding
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum KeyModifier {
+    Ctrl,
+    Shift,
+    Alt,
+    CapsLock,
+}
 
 // Helper to check if the game window is currently focused
 fn is_game_focused() -> bool {
@@ -302,12 +353,52 @@ unsafe extern "system" fn low_level_keyboard_proc(
             // LLKHF_INJECTED (0x10) means the event was generated programmatically.
             // We ignore such events to prevent self-triggering.
             if !kb_ll.flags.contains(LLKHF_INJECTED) {
+                let is_key_down =
+                    w_param.0 as u32 == WM_KEYDOWN || w_param.0 as u32 == WM_SYSKEYDOWN;
+                let is_key_up = w_param.0 as u32 == WM_KEYUP || w_param.0 as u32 == WM_SYSKEYUP;
+
                 // VK_SPACE = 0x20
                 if kb_ll.vkCode == 0x20 {
-                    if w_param.0 as u32 == WM_KEYDOWN || w_param.0 as u32 == WM_SYSKEYDOWN {
+                    if is_key_down {
                         REAL_SPACE_DOWN.store(true, Ordering::SeqCst);
-                    } else if w_param.0 as u32 == WM_KEYUP || w_param.0 as u32 == WM_SYSKEYUP {
+                    } else if is_key_up {
                         REAL_SPACE_DOWN.store(false, Ordering::SeqCst);
+                    }
+                }
+
+                // VK_SHIFT = 0x10, VK_LSHIFT = 0xA0, VK_RSHIFT = 0xA1
+                if kb_ll.vkCode == 0x10 || kb_ll.vkCode == 0xA0 || kb_ll.vkCode == 0xA1 {
+                    if is_key_down {
+                        REAL_SHIFT_DOWN.store(true, Ordering::SeqCst);
+                    } else if is_key_up {
+                        REAL_SHIFT_DOWN.store(false, Ordering::SeqCst);
+                    }
+                }
+
+                // VK_CONTROL = 0x11, VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3
+                if kb_ll.vkCode == 0x11 || kb_ll.vkCode == 0xA2 || kb_ll.vkCode == 0xA3 {
+                    if is_key_down {
+                        REAL_CTRL_DOWN.store(true, Ordering::SeqCst);
+                    } else if is_key_up {
+                        REAL_CTRL_DOWN.store(false, Ordering::SeqCst);
+                    }
+                }
+
+                // VK_MENU = 0x12, VK_LMENU = 0xA4, VK_RMENU = 0xA5
+                if kb_ll.vkCode == 0x12 || kb_ll.vkCode == 0xA4 || kb_ll.vkCode == 0xA5 {
+                    if is_key_down {
+                        REAL_ALT_DOWN.store(true, Ordering::SeqCst);
+                    } else if is_key_up {
+                        REAL_ALT_DOWN.store(false, Ordering::SeqCst);
+                    }
+                }
+
+                // VK_CAPITAL = 0x14
+                if kb_ll.vkCode == 0x14 {
+                    if is_key_down {
+                        REAL_CAPSLOCK_DOWN.store(true, Ordering::SeqCst);
+                    } else if is_key_up {
+                        REAL_CAPSLOCK_DOWN.store(false, Ordering::SeqCst);
                     }
                 }
             }
@@ -323,6 +414,8 @@ define_enum!(FeatureId {
     Restart,
     NoFallDamage,
     ShiftToggle,
+    CtrlToggle,
+    AltToggle,
     AutoClicker,
     GrabNoGun,
     Bhop,
@@ -383,6 +476,8 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
+    ctrl_held: bool,
+    alt_held: bool,
     auto_clicker_delay: u32,
     position_x: i32,
     position_y: i32,
@@ -541,6 +636,20 @@ impl AppState {
                     selecting: false,
                 },
                 Feature {
+                    id: FeatureId::CtrlToggle,
+                    name: "Ctrl Toggle".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
+                    id: FeatureId::AltToggle,
+                    name: "Alt Toggle".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
                     id: FeatureId::AutoClicker,
                     name: "Auto Clicker".into(),
                     rdev_key: None,
@@ -575,6 +684,8 @@ impl AppState {
             width: 0,
             height: 0,
             shift_held: false,
+            ctrl_held: false,
+            alt_held: false,
             auto_clicker_delay: 6,
             position_x: 0,
             position_y: 0,
@@ -642,6 +753,32 @@ impl AppState {
         }
     }
 
+    fn toggle_ctrl(&mut self) {
+        self.ctrl_held = !self.ctrl_held;
+        send_key_state(0x1D, self.ctrl_held);
+    }
+
+    #[allow(dead_code)]
+    fn release_ctrl(&mut self) {
+        if self.ctrl_held {
+            self.ctrl_held = false;
+            send_key_state(0x1D, false);
+        }
+    }
+
+    fn toggle_alt(&mut self) {
+        self.alt_held = !self.alt_held;
+        send_key_state(0x38, self.alt_held);
+    }
+
+    #[allow(dead_code)]
+    fn release_alt(&mut self) {
+        if self.alt_held {
+            self.alt_held = false;
+            send_key_state(0x38, false);
+        }
+    }
+
     fn reset_to_defaults(&mut self) {
         self.auto_clicker_delay = 6;
         self.position_x = 0;
@@ -657,6 +794,10 @@ impl AppState {
 
 struct KeyBindApp {
     state: Arc<Mutex<AppState>>,
+    prev_ctrl: bool,
+    prev_shift: bool,
+    prev_alt: bool,
+    prev_capslock: bool,
 }
 
 impl Drop for KeyBindApp {
@@ -686,6 +827,12 @@ impl KeyBindApp {
         let input_bhop = input_state.clone();
         let input_ac = input_state.clone();
         let input_hotkey = input_state.clone();
+        let input_mod_poll = input_state.clone();
+
+        // Create worker channel early so all threads can access it
+        let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
+        let worker_tx_mod = worker_tx.clone();
+        let worker_tx_hk = worker_tx.clone();
 
         // Start the real mouse listener in a separate thread with a message loop
         thread::spawn(move || {
@@ -763,6 +910,79 @@ impl KeyBindApp {
             }
         });
 
+        // Modifier key polling thread - triggers hotkeys for Ctrl/Shift/Alt
+        // rdev::grab doesn't capture modifier keys, so we poll via Windows hook state
+        let state_clone_mod = state.clone();
+        thread::spawn(move || {
+            let mut prev_ctrl = false;
+            let mut prev_shift = false;
+            let mut prev_alt = false;
+            let prev_capslock = false;
+            loop {
+                let ctrl_down = input_mod_poll.is_ctrl_down();
+                let shift_down = input_mod_poll.is_shift_down();
+                let alt_down = input_mod_poll.is_alt_down();
+                let capslock_down = input_mod_poll.is_capslock_down();
+
+                if is_game_focused() {
+                    let s = state_clone_mod.lock().unwrap();
+                    if ctrl_down && !prev_ctrl {
+                        if let Some(f) = s
+                            .features
+                            .iter()
+                            .find(|f| f.enabled && f.rdev_key == Some(Key::ControlLeft))
+                        {
+                            if f.id == FeatureId::CtrlToggle {
+                                let _ = worker_tx_mod.send(WorkerMessage::CtrlToggle);
+                            }
+                        }
+                    }
+                    if shift_down && !prev_shift {
+                        if let Some(f) = s
+                            .features
+                            .iter()
+                            .find(|f| f.enabled && f.rdev_key == Some(Key::ShiftLeft))
+                        {
+                            if f.id == FeatureId::ShiftToggle {
+                                let _ = worker_tx_mod.send(WorkerMessage::ShiftToggle);
+                            }
+                        }
+                    }
+                    if alt_down && !prev_alt {
+                        if let Some(f) = s
+                            .features
+                            .iter()
+                            .find(|f| f.enabled && f.rdev_key == Some(Key::Alt))
+                        {
+                            if f.id == FeatureId::AltToggle {
+                                let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
+                            }
+                        }
+                    }
+                    if capslock_down && !prev_capslock {
+                        if let Some(f) = s
+                            .features
+                            .iter()
+                            .find(|f| f.enabled && f.rdev_key == Some(Key::CapsLock))
+                        {
+                            if f.id == FeatureId::ShiftToggle {
+                                let _ = worker_tx_mod.send(WorkerMessage::ShiftToggle);
+                            } else if f.id == FeatureId::CtrlToggle {
+                                let _ = worker_tx_mod.send(WorkerMessage::CtrlToggle);
+                            } else if f.id == FeatureId::AltToggle {
+                                let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
+                            }
+                        }
+                    }
+                }
+
+                prev_ctrl = ctrl_down;
+                prev_shift = shift_down;
+                prev_alt = alt_down;
+                thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+            }
+        });
+
         let state_clone_ac = state.clone();
         thread::spawn(move || {
             loop {
@@ -790,10 +1010,7 @@ impl KeyBindApp {
             }
         });
 
-        let state_clone_hk = state.clone();
-
-        // Create worker thread for feature execution
-        let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
+        // Worker thread for feature execution
         let worker_state = state.clone();
         thread::spawn(move || {
             while let Ok(msg) = worker_rx.recv() {
@@ -801,13 +1018,31 @@ impl KeyBindApp {
                     WorkerMessage::ShiftToggle => {
                         worker_state.lock().unwrap().toggle_shift();
                     }
+                    WorkerMessage::CtrlToggle => {
+                        worker_state.lock().unwrap().toggle_ctrl();
+                    }
+                    WorkerMessage::AltToggle => {
+                        worker_state.lock().unwrap().toggle_alt();
+                    }
                     WorkerMessage::NoFallDamage => {
                         Self::no_fall_damage();
                     }
-                    WorkerMessage::HackingPostMessage { x, y, w, h, offset_y } => {
+                    WorkerMessage::HackingPostMessage {
+                        x,
+                        y,
+                        w,
+                        h,
+                        offset_y,
+                    } => {
                         Self::hacking_method_post_message(x, y, w, h, offset_y);
                     }
-                    WorkerMessage::HackingPostMessage2 { x, y, w, h, offset_y } => {
+                    WorkerMessage::HackingPostMessage2 {
+                        x,
+                        y,
+                        w,
+                        h,
+                        offset_y,
+                    } => {
                         Self::hacking_method2(x, y, w, h, offset_y);
                     }
                     WorkerMessage::TipsSkip { x, w, y } => {
@@ -826,8 +1061,8 @@ impl KeyBindApp {
             }
         });
 
+        let state_clone_hk = state.clone();
         thread::spawn(move || {
-            // grab is only needed for hotkey processing (Key)
             let callback = move |event: Event| {
                 // Gracefully shut down if requested
                 if RDEV_SHUTDOWN.load(Ordering::SeqCst) {
@@ -882,23 +1117,37 @@ impl KeyBindApp {
                             // Build worker message for other features
                             let action = match feature_id {
                                 FeatureId::ShiftToggle => Some(WorkerMessage::ShiftToggle),
+                                FeatureId::CtrlToggle => Some(WorkerMessage::CtrlToggle),
+                                FeatureId::AltToggle => Some(WorkerMessage::AltToggle),
                                 FeatureId::NoFallDamage => Some(WorkerMessage::NoFallDamage),
                                 FeatureId::HackingPostMessage => {
                                     Some(WorkerMessage::HackingPostMessage {
-                                        x, y, w, h, offset_y: hack_y
+                                        x,
+                                        y,
+                                        w,
+                                        h,
+                                        offset_y: hack_y,
                                     })
                                 }
                                 FeatureId::HackingPostMessage2 => {
                                     Some(WorkerMessage::HackingPostMessage2 {
-                                        x, y, w, h, offset_y: hack2_y
+                                        x,
+                                        y,
+                                        w,
+                                        h,
+                                        offset_y: hack2_y,
                                     })
                                 }
-                                FeatureId::TipsSkip => {
-                                    Some(WorkerMessage::TipsSkip { x, w, y: y + tips_y })
-                                }
-                                FeatureId::Restart => {
-                                    Some(WorkerMessage::Restart { x, w, y: y + restart_y })
-                                }
+                                FeatureId::TipsSkip => Some(WorkerMessage::TipsSkip {
+                                    x,
+                                    w,
+                                    y: y + tips_y,
+                                }),
+                                FeatureId::Restart => Some(WorkerMessage::Restart {
+                                    x,
+                                    w,
+                                    y: y + restart_y,
+                                }),
                                 FeatureId::GrabNoGun => Some(WorkerMessage::GrabNoGun),
                                 FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
                                 _ => None,
@@ -915,7 +1164,7 @@ impl KeyBindApp {
 
                 // Send to worker thread without holding lock
                 if let Some(action) = feature_action {
-                    let _ = worker_tx.send(action);
+                    let _ = worker_tx_hk.send(action);
                     return None;
                 }
 
@@ -1114,14 +1363,56 @@ impl eframe::App for KeyBindApp {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let mut s = self.state.lock().unwrap();
         if let Some(idx) = s.features.iter().position(|f| f.selecting) {
-            // Check for key press events using events.iter()
+            // Request continuous repaint with short interval while selecting to catch modifier key state changes
+            ctx.request_repaint_after(Duration::from_millis(16)); // ~60 FPS
+
+            // Check for regular key press events (without modifiers)
             let key = ctx.input(|i| {
-                i.events.iter().find_map(|e| match e {
-                    egui::Event::Key { key, pressed: true, .. }
-                        if *key == egui::Key::Escape || egui_to_rdev_key(*key).is_some() => Some(*key),
-                    _ => None,
-                })
+                for event in &i.events {
+                    if let egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } = event
+                    {
+                        // Only accept regular keys when no modifiers are pressed
+                        if !modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+                            if *key == egui::Key::Escape || egui_to_rdev_key(*key).is_some() {
+                                return Some(*key);
+                            }
+                        }
+                    }
+                }
+                None
             });
+
+            // Check for modifier key presses using direct Windows API (GetAsyncKeyState)
+            // This works even when nztool window is focused, unlike hooks which may be blocked by egui
+            let ctrl_down =
+                unsafe { (GetAsyncKeyState(VK_CONTROL.0 as i32) & 0x8000u16 as i16) != 0 };
+            let shift_down =
+                unsafe { (GetAsyncKeyState(VK_SHIFT.0 as i32) & 0x8000u16 as i16) != 0 };
+            let alt_down = unsafe { (GetAsyncKeyState(VK_MENU.0 as i32) & 0x8000u16 as i16) != 0 };
+            let capslock_down =
+                unsafe { (GetAsyncKeyState(VK_CAPITAL.0 as i32) & 0x8000u16 as i16) != 0 };
+
+            let modifier_key = if ctrl_down && !self.prev_ctrl {
+                Some(KeyModifier::Ctrl)
+            } else if shift_down && !self.prev_shift {
+                Some(KeyModifier::Shift)
+            } else if alt_down && !self.prev_alt {
+                Some(KeyModifier::Alt)
+            } else if capslock_down && !self.prev_capslock {
+                Some(KeyModifier::CapsLock)
+            } else {
+                None
+            };
+
+            self.prev_ctrl = ctrl_down;
+            self.prev_shift = shift_down;
+            self.prev_alt = alt_down;
+            self.prev_capslock = capslock_down;
 
             if let Some(k) = key {
                 if k == egui::Key::Escape {
@@ -1131,12 +1422,22 @@ impl eframe::App for KeyBindApp {
                     if rd_key.is_some() {
                         s.features[idx].rdev_key = rd_key;
                         s.features[idx].selecting = false;
-                        // Save config when key is set
                         let _ = s.save_config();
                     }
                 }
+            } else if let Some(modifier) = modifier_key {
+                let rd_key = match modifier {
+                    KeyModifier::Ctrl => Some(Key::ControlLeft),
+                    KeyModifier::Shift => Some(Key::ShiftLeft),
+                    KeyModifier::Alt => Some(Key::Alt),
+                    KeyModifier::CapsLock => Some(Key::CapsLock),
+                };
+                if rd_key.is_some() {
+                    s.features[idx].rdev_key = rd_key;
+                    s.features[idx].selecting = false;
+                    let _ = s.save_config();
+                }
             }
-            ctx.request_repaint();
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1500,6 +1801,14 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "nztool",
         options,
-        Box::new(|_| Ok(Box::new(KeyBindApp { state }))),
+        Box::new(|_| {
+            Ok(Box::new(KeyBindApp {
+                state,
+                prev_ctrl: false,
+                prev_shift: false,
+                prev_alt: false,
+                prev_capslock: false,
+            }))
+        }),
     )
 }
