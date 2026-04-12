@@ -288,8 +288,8 @@ fn is_game_focused() -> bool {
 
     let now = {
         // Get current time in milliseconds using WinAPI
-        let elapsed = unsafe { GetTickCount64() };
-        elapsed
+        
+        unsafe { GetTickCount64() }
     };
 
     let last = GLOBAL_STATE.last_focus_check.load(Ordering::Relaxed);
@@ -530,8 +530,8 @@ struct AppState {
 fn get_config_path() -> std::path::PathBuf {
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
     let config_dir = std::path::PathBuf::from(appdata).join("nzconfig");
-    let config_file = config_dir.join("config.json");
-    config_file
+    
+    config_dir.join("config.json")
 }
 
 // Convert rdev::Key to ConfigKey then to string
@@ -997,41 +997,32 @@ impl KeyBindApp {
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                         continue;
                     };
-                    if ctrl_down && !prev_ctrl {
-                        if let Some(f) = s
+                    if ctrl_down && !prev_ctrl
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::ControlLeft))
-                        {
-                            if f.id == FeatureId::CtrlToggle {
+                            && f.id == FeatureId::CtrlToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::CtrlToggle);
                             }
-                        }
-                    }
-                    if shift_down && !prev_shift {
-                        if let Some(f) = s
+                    if shift_down && !prev_shift
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::ShiftLeft))
-                        {
-                            if f.id == FeatureId::ShiftToggle {
+                            && f.id == FeatureId::ShiftToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::ShiftToggle);
                             }
-                        }
-                    }
-                    if alt_down && !prev_alt {
-                        if let Some(f) = s
+                    if alt_down && !prev_alt
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::Alt))
-                        {
-                            if f.id == FeatureId::AltToggle {
+                            && f.id == FeatureId::AltToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
                             }
-                        }
-                    }
-                    if capslock_down && !prev_capslock {
-                        if let Some(f) = s
+                    if capslock_down && !prev_capslock
+                        && let Some(f) = s
                             .features
                             .iter()
                             .find(|f| f.enabled && f.rdev_key == Some(Key::CapsLock))
@@ -1044,7 +1035,6 @@ impl KeyBindApp {
                                 let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
                             }
                         }
-                    }
                 }
 
                 prev_ctrl = ctrl_down;
@@ -1061,7 +1051,7 @@ impl KeyBindApp {
                 let (enabled, delay_ms) = {
                     let Some(s) = safe_lock(&state_clone_ac) else {
                         error!("Failed to lock state in autoclicker thread");
-                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS as u64));
+                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                         continue;
                     };
                     let enabled = s
@@ -1077,10 +1067,10 @@ impl KeyBindApp {
                         send_mouse_click();
                         thread::sleep(Duration::from_millis(delay_ms as u64));
                     } else {
-                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS as u64));
+                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                     }
                 } else {
-                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS as u64));
+                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                 }
             }
         });
@@ -1395,8 +1385,10 @@ impl KeyBindApp {
     fn grab_no_gun() {
         unsafe {
             // Scroll wheel up (WHEEL_DELTA = 120)
-            let mut wheel_input = INPUT::default();
-            wheel_input.r#type = INPUT_MOUSE;
+            let mut wheel_input = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
             wheel_input.Anonymous.mi.dwFlags = MOUSEEVENTF_WHEEL;
             wheel_input.Anonymous.mi.mouseData = 120;
             if SendInput(&[wheel_input], std::mem::size_of::<INPUT>() as i32) == 0 {
@@ -1423,8 +1415,10 @@ impl KeyBindApp {
 
     fn send_mouse_state(down: bool) {
         unsafe {
-            let mut input = INPUT::default();
-            input.r#type = INPUT_MOUSE;
+            let mut input = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
             input.Anonymous.mi.dwFlags = if down {
                 MOUSEEVENTF_LEFTDOWN
             } else {
@@ -1458,11 +1452,10 @@ impl eframe::App for KeyBindApp {
                     } = event
                     {
                         // Only accept regular keys when no modifiers are pressed
-                        if !modifiers.ctrl && !modifiers.shift && !modifiers.alt {
-                            if *key == egui::Key::Escape || egui_to_rdev_key(*key).is_some() {
+                        if !modifiers.ctrl && !modifiers.shift && !modifiers.alt
+                            && (*key == egui::Key::Escape || egui_to_rdev_key(*key).is_some()) {
                                 return Some(*key);
                             }
-                        }
                     }
                 }
                 None
@@ -1574,8 +1567,7 @@ impl eframe::App for KeyBindApp {
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
                             .clicked()
-                        {
-                            if s.features[i].rdev_key.is_some() {
+                            && s.features[i].rdev_key.is_some() {
                                 s.features[i].enabled = !s.features[i].enabled;
                                 if !s.features[i].enabled
                                     && s.features[i].id == FeatureId::ShiftToggle
@@ -1585,7 +1577,6 @@ impl eframe::App for KeyBindApp {
                                 // Save config when enable/disable state changes
                                 let _ = s.save_config();
                             }
-                        }
 
                         ui.end_row(); // Move to the next row in the grid
                     }
@@ -1712,13 +1703,17 @@ fn send_mouse_click() {
 fn send_instant_burst_clicks(count: usize) {
     let mut inputs = Vec::with_capacity(count * 2);
     for _ in 0..count {
-        let mut down = INPUT::default();
-        down.r#type = INPUT_MOUSE;
+        let mut down = INPUT {
+            r#type: INPUT_MOUSE,
+            ..Default::default()
+        };
         down.Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
         inputs.push(down);
 
-        let mut up = INPUT::default();
-        up.r#type = INPUT_MOUSE;
+        let mut up = INPUT {
+            r#type: INPUT_MOUSE,
+            ..Default::default()
+        };
         up.Anonymous.mi.dwFlags = MOUSEEVENTF_LEFTUP;
         inputs.push(up);
     }
@@ -1748,8 +1743,10 @@ fn send_key_tap(scan: u16) {
 
 fn send_key_state(scan: u16, down: bool) {
     unsafe {
-        let mut input = INPUT::default();
-        input.r#type = INPUT_KEYBOARD;
+        let mut input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            ..Default::default()
+        };
         input.Anonymous.ki.wScan = scan;
         input.Anonymous.ki.dwFlags = if down {
             KEYEVENTF_SCANCODE
