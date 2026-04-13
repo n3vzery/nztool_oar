@@ -813,18 +813,6 @@ impl AppState {
         }
     }
 
-    fn toggle_fast_drag(&mut self) {
-        self.fast_drag_active = !self.fast_drag_active;
-        if self.fast_drag_active {
-            send_mouse_hold(true);
-            thread::sleep(Duration::from_millis(3));
-            send_key_state(0x2A, true);
-        } else {
-            send_mouse_hold(false);
-            send_key_state(0x2A, false);
-        }
-    }
-
     fn release_fast_drag(&mut self) {
         if self.fast_drag_active {
             self.fast_drag_active = false;
@@ -1161,7 +1149,18 @@ impl KeyBindApp {
                             }
 
                             if feature_id == FeatureId::FastDrag {
-                                s.toggle_fast_drag();
+                                let was_active = s.fast_drag_active;
+                                s.fast_drag_active = !s.fast_drag_active;
+                                let now_active = s.fast_drag_active;
+                                drop(s);
+                                if !was_active && now_active {
+                                    send_mouse_hold(true);
+                                    thread::sleep(Duration::from_millis(3));
+                                    send_key_state(0x2A, true);
+                                } else if was_active && !now_active {
+                                    send_mouse_hold(false);
+                                    send_key_state(0x2A, false);
+                                }
                                 return None;
                             }
 
