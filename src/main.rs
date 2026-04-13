@@ -454,7 +454,7 @@ define_enum!(FeatureId {
     Restart,
     NoFallDamage,
     ShiftToggle,
-    FastDrag,
+    // TODO: FastDrag - planned for future implementation
     AutoClicker,
     GrabNoGun,
     Bhop,
@@ -537,7 +537,6 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
-    fast_drag_active: bool,
     auto_clicker_delay: u32,
     auto_clicker_method: ClickMethod,
     auto_clicker_click_count: u32,
@@ -702,13 +701,6 @@ impl AppState {
                     selecting: false,
                 },
                 Feature {
-                    id: FeatureId::FastDrag,
-                    name: "Fast Dragging".into(),
-                    rdev_key: None,
-                    enabled: false,
-                    selecting: false,
-                },
-                Feature {
                     id: FeatureId::AutoClicker,
                     name: "Auto Clicker".into(),
                     rdev_key: None,
@@ -743,7 +735,6 @@ impl AppState {
             width: 0,
             height: 0,
             shift_held: false,
-            fast_drag_active: false,
             auto_clicker_delay: 6,
             auto_clicker_method: ClickMethod::default(),
             auto_clicker_click_count: 1,
@@ -813,16 +804,7 @@ impl AppState {
         }
     }
 
-    fn release_fast_drag(&mut self) {
-        if self.fast_drag_active {
-            self.fast_drag_active = false;
-            send_mouse_hold(false);
-            send_key_state(0x2A, false);
-        }
-    }
-
     fn reset_to_defaults(&mut self) {
-        self.release_fast_drag();
         self.auto_clicker_delay = 6;
         self.auto_clicker_method = ClickMethod::default();
         self.auto_clicker_click_count = 1;
@@ -1116,7 +1098,7 @@ impl KeyBindApp {
 
                 // Minimal lock scope - copy only needed data
                 let (feature_action, _should_block) = {
-                    let Some(mut s) = safe_lock(&state_clone_hk) else {
+                    let Some(s) = safe_lock(&state_clone_hk) else {
                         error!("Failed to lock state in hotkey callback");
                         return Some(event);
                     };
@@ -1145,27 +1127,6 @@ impl KeyBindApp {
 
                             if feature_id == FeatureId::Bhop {
                                 let _ = input_hotkey.toggle_bhop();
-                                return None;
-                            }
-
-                            if feature_id == FeatureId::FastDrag {
-                                let was_active = s.fast_drag_active;
-                                s.fast_drag_active = !s.fast_drag_active;
-                                let now_active = s.fast_drag_active;
-                                drop(s);
-                                if !was_active && now_active {
-                                    send_key_state(0x1D, true);
-                                    thread::sleep(Duration::from_millis(125));
-                                    send_key_state(0x2A, true);
-                                    thread::sleep(Duration::from_millis(125));
-                                    send_mouse_hold(true);
-                                } else if was_active && !now_active {
-                                    send_mouse_hold(false);
-                                    thread::sleep(Duration::from_millis(125));
-                                    send_key_state(0x2A, false);
-                                    thread::sleep(Duration::from_millis(125));
-                                    send_key_state(0x1D, false);
-                                }
                                 return None;
                             }
 
@@ -1523,16 +1484,12 @@ impl eframe::App for KeyBindApp {
                             if s.features[i].id == FeatureId::ShiftToggle {
                                 s.release_shift();
                             }
-                            if s.features[i].id == FeatureId::FastDrag {
-                                s.release_fast_drag();
-                            }
                             s.features[i].rdev_key = None;
                             s.features[i].enabled = false;
                             s.features[i].selecting = false;
                             let _ = s.save_config();
                         }
 
-                        // 4. Enable/Disable Button
                         let mut color = if s.features[i].enabled {
                             egui::Color32::from_rgb(0, 150, 0)
                         } else {
@@ -1540,12 +1497,6 @@ impl eframe::App for KeyBindApp {
                         };
                         if s.features[i].id == FeatureId::ShiftToggle
                             && s.shift_held
-                            && s.features[i].enabled
-                        {
-                            color = egui::Color32::BLUE;
-                        }
-                        if s.features[i].id == FeatureId::FastDrag
-                            && s.fast_drag_active
                             && s.features[i].enabled
                         {
                             color = egui::Color32::BLUE;
@@ -1560,11 +1511,6 @@ impl eframe::App for KeyBindApp {
                                     && s.features[i].id == FeatureId::ShiftToggle
                                 {
                                     s.release_shift();
-                                }
-                                if !s.features[i].enabled
-                                    && s.features[i].id == FeatureId::FastDrag
-                                {
-                                    s.release_fast_drag();
                                 }
                                 let _ = s.save_config();
                             }
@@ -1778,6 +1724,8 @@ fn send_instant_burst_clicks(count: usize) {
     }
 }
 
+// TODO: send_mouse_hold - used by FastDrag (planned for future implementation)
+#[allow(dead_code)]
 fn send_mouse_hold(down: bool) {
     unsafe {
         let mut input = INPUT {
