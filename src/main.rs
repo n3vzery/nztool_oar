@@ -1154,12 +1154,15 @@ impl KeyBindApp {
                                 let now_active = s.fast_drag_active;
                                 drop(s);
                                 if !was_active && now_active {
-                                    send_mouse_hold(true);
-                                    thread::sleep(Duration::from_millis(300));
+                                    send_key_state(0x1D, true);
+                                    thread::sleep(Duration::from_millis(100));
                                     send_key_state(0x2A, true);
+                                    thread::sleep(Duration::from_millis(100));
+                                    send_mouse_hold(true);
                                 } else if was_active && !now_active {
                                     send_mouse_hold(false);
                                     send_key_state(0x2A, false);
+                                    send_key_state(0x1D, false);
                                 }
                                 return None;
                             }
