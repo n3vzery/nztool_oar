@@ -1155,12 +1155,16 @@ impl KeyBindApp {
                                 drop(s);
                                 if !was_active && now_active {
                                     send_key_state(0x1D, true);
+                                    thread::sleep(Duration::from_millis(50));
                                     send_key_state(0x2A, true);
-                                    thread::sleep(Duration::from_millis(10));
+                                    thread::sleep(Duration::from_millis(50));
                                     send_mouse_hold(true);
                                 } else if was_active && !now_active {
+                                    thread::sleep(Duration::from_millis(30));
                                     send_mouse_hold(false);
+                                    thread::sleep(Duration::from_millis(30));
                                     send_key_state(0x2A, false);
+                                    thread::sleep(Duration::from_millis(30));
                                     send_key_state(0x1D, false);
                                 }
                                 return None;
