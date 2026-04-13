@@ -462,11 +462,28 @@ define_enum!(FeatureId {
 });
 
 // Serializable structure for config file
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+enum ClickMethod {
+    #[default]
+    SendInput,
+    PostMessage,
+}
+
+impl std::fmt::Display for ClickMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClickMethod::SendInput => write!(f, "SendInput"),
+            ClickMethod::PostMessage => write!(f, "PostMessage"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableConfig {
     monitor_id: String,
     features: Vec<SerializableFeature>,
     auto_clicker_delay: u32,
+    auto_clicker_method: ClickMethod,
     position_x: i32,
     position_y: i32,
     #[serde(default = "default_tips_skip_y")]
@@ -518,6 +535,7 @@ struct AppState {
     ctrl_held: bool,
     alt_held: bool,
     auto_clicker_delay: u32,
+    auto_clicker_method: ClickMethod,
     position_x: i32,
     position_y: i32,
     tips_skip_y_offset: i32,
@@ -571,6 +589,7 @@ impl AppState {
             monitor_id: self.monitor_id.clone(),
             features,
             auto_clicker_delay: self.auto_clicker_delay,
+            auto_clicker_method: self.auto_clicker_method,
             position_x: self.position_x,
             position_y: self.position_y,
             tips_skip_y_offset: self.tips_skip_y_offset,
@@ -617,6 +636,7 @@ impl AppState {
 
         // Load auto_clicker_delay and position values
         self.auto_clicker_delay = config.auto_clicker_delay;
+        self.auto_clicker_method = config.auto_clicker_method;
         self.position_x = config.position_x;
         self.position_y = config.position_y;
         self.tips_skip_y_offset = config.tips_skip_y_offset;
@@ -726,6 +746,7 @@ impl AppState {
             ctrl_held: false,
             alt_held: false,
             auto_clicker_delay: 6,
+            auto_clicker_method: ClickMethod::default(),
             position_x: 0,
             position_y: 0,
             tips_skip_y_offset: 830,
@@ -820,6 +841,7 @@ impl AppState {
 
     fn reset_to_defaults(&mut self) {
         self.auto_clicker_delay = 6;
+        self.auto_clicker_method = ClickMethod::default();
         self.position_x = 0;
         self.position_y = 0;
         self.tips_skip_y_offset = 830;
@@ -1047,8 +1069,7 @@ impl KeyBindApp {
         let state_clone_ac = state.clone();
         thread::spawn(move || {
             loop {
-                // Read the global autoclicker mode and check if the feature is enabled in UI
-                let (enabled, delay_ms) = {
+                let (enabled, delay_ms, click_method) = {
                     let Some(s) = safe_lock(&state_clone_ac) else {
                         error!("Failed to lock state in autoclicker thread");
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -1058,13 +1079,16 @@ impl KeyBindApp {
                         .features
                         .iter()
                         .any(|f| f.id == FeatureId::AutoClicker && f.enabled);
-                    (enabled, s.auto_clicker_delay)
+                    (enabled, s.auto_clicker_delay, s.auto_clicker_method)
                 };
                 let active = input_ac.is_autoclicker_active();
 
                 if active && enabled && is_game_focused() {
                     if input_ac.is_lmb_down() {
-                        send_mouse_click();
+                        match click_method {
+                            ClickMethod::SendInput => send_mouse_click(),
+                            ClickMethod::PostMessage => send_mouse_click_postmessage(),
+                        }
                         thread::sleep(Duration::from_millis(delay_ms as u64));
                     } else {
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -1615,6 +1639,21 @@ impl eframe::App for KeyBindApp {
                         );
                     });
 
+                    // Auto Clicker Method selection
+                    ui.horizontal(|ui| {
+                        ui.label("Click Method:");
+                        let send_input_selected = s.auto_clicker_method == ClickMethod::SendInput;
+                        let post_message_selected = s.auto_clicker_method == ClickMethod::PostMessage;
+                        if ui.selectable_label(send_input_selected, "SendInput").clicked() {
+                            s.auto_clicker_method = ClickMethod::SendInput;
+                            let _ = s.save_config();
+                        }
+                        if ui.selectable_label(post_message_selected, "PostMessage").clicked() {
+                            s.auto_clicker_method = ClickMethod::PostMessage;
+                            let _ = s.save_config();
+                        }
+                    });
+
                     ui.add_space(5.0);
 
                     // Position X/Y with Save/Load/Clear
@@ -1698,6 +1737,39 @@ fn move_mouse(x: i32, y: i32) {
 
 fn send_mouse_click() {
     send_instant_burst_clicks(1);
+}
+
+fn send_mouse_click_postmessage() {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            error!("GetForegroundWindow returned null in PostMessage click");
+            return;
+        }
+
+        let mut cursor_pos = POINT::default();
+        if GetCursorPos(&mut cursor_pos).is_err() {
+            error!("GetCursorPos failed in PostMessage click");
+            return;
+        }
+
+        let mut pt = POINT {
+            x: cursor_pos.x,
+            y: cursor_pos.y,
+        };
+        if !ScreenToClient(hwnd, &mut pt).as_bool() {
+            warn!("ScreenToClient failed in PostMessage click");
+        }
+
+        let l_param = pack_lparam(pt.x, pt.y);
+
+        if PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param)).is_err() {
+            error!("PostMessageA WM_LBUTTONDOWN failed");
+        }
+        if PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param)).is_err() {
+            error!("PostMessageA WM_LBUTTONUP failed");
+        }
+    }
 }
 
 fn send_instant_burst_clicks(count: usize) {
