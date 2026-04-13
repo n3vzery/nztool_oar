@@ -61,7 +61,6 @@ static GLOBAL_STATE: GlobalInputState = GlobalInputState::new();
 // Worker thread messages for feature execution
 enum WorkerMessage {
     ShiftToggle,
-    FastDrag,
     NoFallDamage,
     HackingPostMessage {
         x: i32,
@@ -817,8 +816,9 @@ impl AppState {
     fn toggle_fast_drag(&mut self) {
         self.fast_drag_active = !self.fast_drag_active;
         if self.fast_drag_active {
-            send_key_state(0x2A, true);
             send_mouse_hold(true);
+            thread::sleep(Duration::from_millis(3));
+            send_key_state(0x2A, true);
         } else {
             send_mouse_hold(false);
             send_key_state(0x2A, false);
@@ -1067,11 +1067,6 @@ impl KeyBindApp {
                             s.toggle_shift();
                         }
                     }
-                    WorkerMessage::FastDrag => {
-                        if let Some(mut s) = safe_lock(&worker_state) {
-                            s.toggle_fast_drag();
-                        }
-                    }
                     WorkerMessage::NoFallDamage => {
                         Self::no_fall_damage();
                     }
@@ -1133,7 +1128,7 @@ impl KeyBindApp {
 
                 // Minimal lock scope - copy only needed data
                 let (feature_action, _should_block) = {
-                    let Some(s) = safe_lock(&state_clone_hk) else {
+                    let Some(mut s) = safe_lock(&state_clone_hk) else {
                         error!("Failed to lock state in hotkey callback");
                         return Some(event);
                     };
@@ -1165,10 +1160,14 @@ impl KeyBindApp {
                                 return None;
                             }
 
+                            if feature_id == FeatureId::FastDrag {
+                                s.toggle_fast_drag();
+                                return None;
+                            }
+
                             // Build worker message for other features
                             let action = match feature_id {
                                 FeatureId::ShiftToggle => Some(WorkerMessage::ShiftToggle),
-                                FeatureId::FastDrag => Some(WorkerMessage::FastDrag),
                                 FeatureId::NoFallDamage => Some(WorkerMessage::NoFallDamage),
                                 FeatureId::HackingPostMessage => {
                                     Some(WorkerMessage::HackingPostMessage {
