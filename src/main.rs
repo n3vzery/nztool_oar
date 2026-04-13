@@ -61,8 +61,6 @@ static GLOBAL_STATE: GlobalInputState = GlobalInputState::new();
 // Worker thread messages for feature execution
 enum WorkerMessage {
     ShiftToggle,
-    CtrlToggle,
-    AltToggle,
     NoFallDamage,
     HackingPostMessage {
         x: i32,
@@ -137,6 +135,7 @@ impl InputState {
         GLOBAL_STATE.bhop_active.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn is_ctrl_down(&self) -> bool {
         GLOBAL_STATE.ctrl_down.load(Ordering::SeqCst)
     }
@@ -145,10 +144,12 @@ impl InputState {
         GLOBAL_STATE.shift_down.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn is_alt_down(&self) -> bool {
         GLOBAL_STATE.alt_down.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn is_capslock_down(&self) -> bool {
         GLOBAL_STATE.capslock_down.load(Ordering::SeqCst)
     }
@@ -453,8 +454,7 @@ define_enum!(FeatureId {
     Restart,
     NoFallDamage,
     ShiftToggle,
-    CtrlToggle,
-    AltToggle,
+    // TODO: FastDrag - planned for future implementation
     AutoClicker,
     GrabNoGun,
     Bhop,
@@ -462,11 +462,30 @@ define_enum!(FeatureId {
 });
 
 // Serializable structure for config file
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+enum ClickMethod {
+    #[default]
+    SendInput,
+    PostMessage,
+}
+
+impl std::fmt::Display for ClickMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClickMethod::SendInput => write!(f, "SendInput"),
+            ClickMethod::PostMessage => write!(f, "PostMessage"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableConfig {
     monitor_id: String,
     features: Vec<SerializableFeature>,
     auto_clicker_delay: u32,
+    auto_clicker_method: ClickMethod,
+    #[serde(default = "default_auto_clicker_click_count")]
+    auto_clicker_click_count: u32,
     position_x: i32,
     position_y: i32,
     #[serde(default = "default_tips_skip_y")]
@@ -490,6 +509,9 @@ fn default_hacking_y() -> i32 {
 }
 fn default_hacking2_y() -> i32 {
     -140
+}
+fn default_auto_clicker_click_count() -> u32 {
+    1
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -515,9 +537,9 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
-    ctrl_held: bool,
-    alt_held: bool,
     auto_clicker_delay: u32,
+    auto_clicker_method: ClickMethod,
+    auto_clicker_click_count: u32,
     position_x: i32,
     position_y: i32,
     tips_skip_y_offset: i32,
@@ -571,6 +593,8 @@ impl AppState {
             monitor_id: self.monitor_id.clone(),
             features,
             auto_clicker_delay: self.auto_clicker_delay,
+            auto_clicker_method: self.auto_clicker_method,
+            auto_clicker_click_count: self.auto_clicker_click_count,
             position_x: self.position_x,
             position_y: self.position_y,
             tips_skip_y_offset: self.tips_skip_y_offset,
@@ -617,6 +641,8 @@ impl AppState {
 
         // Load auto_clicker_delay and position values
         self.auto_clicker_delay = config.auto_clicker_delay;
+        self.auto_clicker_method = config.auto_clicker_method;
+        self.auto_clicker_click_count = config.auto_clicker_click_count;
         self.position_x = config.position_x;
         self.position_y = config.position_y;
         self.tips_skip_y_offset = config.tips_skip_y_offset;
@@ -675,20 +701,6 @@ impl AppState {
                     selecting: false,
                 },
                 Feature {
-                    id: FeatureId::CtrlToggle,
-                    name: "Ctrl Toggle".into(),
-                    rdev_key: None,
-                    enabled: false,
-                    selecting: false,
-                },
-                Feature {
-                    id: FeatureId::AltToggle,
-                    name: "Alt Toggle".into(),
-                    rdev_key: None,
-                    enabled: false,
-                    selecting: false,
-                },
-                Feature {
                     id: FeatureId::AutoClicker,
                     name: "Auto Clicker".into(),
                     rdev_key: None,
@@ -723,9 +735,9 @@ impl AppState {
             width: 0,
             height: 0,
             shift_held: false,
-            ctrl_held: false,
-            alt_held: false,
             auto_clicker_delay: 6,
+            auto_clicker_method: ClickMethod::default(),
+            auto_clicker_click_count: 1,
             position_x: 0,
             position_y: 0,
             tips_skip_y_offset: 830,
@@ -792,34 +804,10 @@ impl AppState {
         }
     }
 
-    fn toggle_ctrl(&mut self) {
-        self.ctrl_held = !self.ctrl_held;
-        send_key_state(0x1D, self.ctrl_held);
-    }
-
-    #[allow(dead_code)]
-    fn release_ctrl(&mut self) {
-        if self.ctrl_held {
-            self.ctrl_held = false;
-            send_key_state(0x1D, false);
-        }
-    }
-
-    fn toggle_alt(&mut self) {
-        self.alt_held = !self.alt_held;
-        send_key_state(0x38, self.alt_held);
-    }
-
-    #[allow(dead_code)]
-    fn release_alt(&mut self) {
-        if self.alt_held {
-            self.alt_held = false;
-            send_key_state(0x38, false);
-        }
-    }
-
     fn reset_to_defaults(&mut self) {
         self.auto_clicker_delay = 6;
+        self.auto_clicker_method = ClickMethod::default();
+        self.auto_clicker_click_count = 1;
         self.position_x = 0;
         self.position_y = 0;
         self.tips_skip_y_offset = 830;
@@ -977,19 +965,13 @@ impl KeyBindApp {
             }
         });
 
-        // Modifier key polling thread - triggers hotkeys for Ctrl/Shift/Alt
+        // Modifier key polling thread - triggers hotkeys for Shift
         // rdev::grab doesn't capture modifier keys, so we poll via Windows hook state
         let state_clone_mod = state.clone();
         thread::spawn(move || {
-            let mut prev_ctrl = false;
             let mut prev_shift = false;
-            let mut prev_alt = false;
-            let prev_capslock = false;
             loop {
-                let ctrl_down = input_mod_poll.is_ctrl_down();
                 let shift_down = input_mod_poll.is_shift_down();
-                let alt_down = input_mod_poll.is_alt_down();
-                let capslock_down = input_mod_poll.is_capslock_down();
 
                 if is_game_focused() {
                     let Some(s) = safe_lock(&state_clone_mod) else {
@@ -997,14 +979,6 @@ impl KeyBindApp {
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                         continue;
                     };
-                    if ctrl_down && !prev_ctrl
-                        && let Some(f) = s
-                            .features
-                            .iter()
-                            .find(|f| f.enabled && f.rdev_key == Some(Key::ControlLeft))
-                            && f.id == FeatureId::CtrlToggle {
-                                let _ = worker_tx_mod.send(WorkerMessage::CtrlToggle);
-                            }
                     if shift_down && !prev_shift
                         && let Some(f) = s
                             .features
@@ -1013,33 +987,9 @@ impl KeyBindApp {
                             && f.id == FeatureId::ShiftToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::ShiftToggle);
                             }
-                    if alt_down && !prev_alt
-                        && let Some(f) = s
-                            .features
-                            .iter()
-                            .find(|f| f.enabled && f.rdev_key == Some(Key::Alt))
-                            && f.id == FeatureId::AltToggle {
-                                let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
-                            }
-                    if capslock_down && !prev_capslock
-                        && let Some(f) = s
-                            .features
-                            .iter()
-                            .find(|f| f.enabled && f.rdev_key == Some(Key::CapsLock))
-                        {
-                            if f.id == FeatureId::ShiftToggle {
-                                let _ = worker_tx_mod.send(WorkerMessage::ShiftToggle);
-                            } else if f.id == FeatureId::CtrlToggle {
-                                let _ = worker_tx_mod.send(WorkerMessage::CtrlToggle);
-                            } else if f.id == FeatureId::AltToggle {
-                                let _ = worker_tx_mod.send(WorkerMessage::AltToggle);
-                            }
-                        }
                 }
 
-                prev_ctrl = ctrl_down;
                 prev_shift = shift_down;
-                prev_alt = alt_down;
                 thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
             }
         });
@@ -1047,8 +997,7 @@ impl KeyBindApp {
         let state_clone_ac = state.clone();
         thread::spawn(move || {
             loop {
-                // Read the global autoclicker mode and check if the feature is enabled in UI
-                let (enabled, delay_ms) = {
+                let (enabled, delay_ms, click_method, click_count) = {
                     let Some(s) = safe_lock(&state_clone_ac) else {
                         error!("Failed to lock state in autoclicker thread");
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -1058,13 +1007,16 @@ impl KeyBindApp {
                         .features
                         .iter()
                         .any(|f| f.id == FeatureId::AutoClicker && f.enabled);
-                    (enabled, s.auto_clicker_delay)
+                    (enabled, s.auto_clicker_delay, s.auto_clicker_method, s.auto_clicker_click_count)
                 };
                 let active = input_ac.is_autoclicker_active();
 
                 if active && enabled && is_game_focused() {
                     if input_ac.is_lmb_down() {
-                        send_mouse_click();
+                        match click_method {
+                            ClickMethod::SendInput => send_mouse_click(),
+                            ClickMethod::PostMessage => send_mouse_click_postmessage(click_count),
+                        }
                         thread::sleep(Duration::from_millis(delay_ms as u64));
                     } else {
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -1083,16 +1035,6 @@ impl KeyBindApp {
                     WorkerMessage::ShiftToggle => {
                         if let Some(mut s) = safe_lock(&worker_state) {
                             s.toggle_shift();
-                        }
-                    }
-                    WorkerMessage::CtrlToggle => {
-                        if let Some(mut s) = safe_lock(&worker_state) {
-                            s.toggle_ctrl();
-                        }
-                    }
-                    WorkerMessage::AltToggle => {
-                        if let Some(mut s) = safe_lock(&worker_state) {
-                            s.toggle_alt();
                         }
                     }
                     WorkerMessage::NoFallDamage => {
@@ -1191,8 +1133,6 @@ impl KeyBindApp {
                             // Build worker message for other features
                             let action = match feature_id {
                                 FeatureId::ShiftToggle => Some(WorkerMessage::ShiftToggle),
-                                FeatureId::CtrlToggle => Some(WorkerMessage::CtrlToggle),
-                                FeatureId::AltToggle => Some(WorkerMessage::AltToggle),
                                 FeatureId::NoFallDamage => Some(WorkerMessage::NoFallDamage),
                                 FeatureId::HackingPostMessage => {
                                     Some(WorkerMessage::HackingPostMessage {
@@ -1547,11 +1487,9 @@ impl eframe::App for KeyBindApp {
                             s.features[i].rdev_key = None;
                             s.features[i].enabled = false;
                             s.features[i].selecting = false;
-                            // Save config when reset
                             let _ = s.save_config();
                         }
 
-                        // 4. Enable/Disable Button
                         let mut color = if s.features[i].enabled {
                             egui::Color32::from_rgb(0, 150, 0)
                         } else {
@@ -1574,7 +1512,6 @@ impl eframe::App for KeyBindApp {
                                 {
                                     s.release_shift();
                                 }
-                                // Save config when enable/disable state changes
                                 let _ = s.save_config();
                             }
 
@@ -1614,6 +1551,32 @@ impl eframe::App for KeyBindApp {
                             .text("ms"),
                         );
                     });
+
+                    // Auto Clicker Method selection
+                    ui.horizontal(|ui| {
+                        ui.label("Click Method:");
+                        let send_input_selected = s.auto_clicker_method == ClickMethod::SendInput;
+                        let post_message_selected = s.auto_clicker_method == ClickMethod::PostMessage;
+                        if ui.selectable_label(send_input_selected, "SendInput").clicked() {
+                            s.auto_clicker_method = ClickMethod::SendInput;
+                            let _ = s.save_config();
+                        }
+                        if ui.selectable_label(post_message_selected, "PostMessage").clicked() {
+                            s.auto_clicker_method = ClickMethod::PostMessage;
+                            let _ = s.save_config();
+                        }
+                    });
+
+                    // PostMessage click count
+                    if s.auto_clicker_method == ClickMethod::PostMessage {
+                        ui.horizontal(|ui| {
+                            ui.label("Clicks per trigger:");
+                            ui.add(egui::DragValue::new(&mut s.auto_clicker_click_count).speed(1.0).range(1..=20));
+                            if ui.button("Apply").clicked() {
+                                let _ = s.save_config();
+                            }
+                        });
+                    }
 
                     ui.add_space(5.0);
 
@@ -1700,6 +1663,41 @@ fn send_mouse_click() {
     send_instant_burst_clicks(1);
 }
 
+fn send_mouse_click_postmessage(click_count: u32) {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            error!("GetForegroundWindow returned null in PostMessage click");
+            return;
+        }
+
+        let mut cursor_pos = POINT::default();
+        if GetCursorPos(&mut cursor_pos).is_err() {
+            error!("GetCursorPos failed in PostMessage click");
+            return;
+        }
+
+        let mut pt = POINT {
+            x: cursor_pos.x,
+            y: cursor_pos.y,
+        };
+        if !ScreenToClient(hwnd, &mut pt).as_bool() {
+            warn!("ScreenToClient failed in PostMessage click");
+        }
+
+        let l_param = pack_lparam(pt.x, pt.y);
+
+        for _ in 0..click_count {
+            if PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param)).is_err() {
+                error!("PostMessageA WM_LBUTTONDOWN failed");
+            }
+            if PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param)).is_err() {
+                error!("PostMessageA WM_LBUTTONUP failed");
+            }
+        }
+    }
+}
+
 fn send_instant_burst_clicks(count: usize) {
     let mut inputs = Vec::with_capacity(count * 2);
     for _ in 0..count {
@@ -1722,6 +1720,25 @@ fn send_instant_burst_clicks(count: usize) {
         let result = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
         if result == 0 {
             error!("SendInput failed to send {} mouse clicks", count);
+        }
+    }
+}
+
+// TODO: send_mouse_hold - used by FastDrag (planned for future implementation)
+#[allow(dead_code)]
+fn send_mouse_hold(down: bool) {
+    unsafe {
+        let mut input = INPUT {
+            r#type: INPUT_MOUSE,
+            ..Default::default()
+        };
+        input.Anonymous.mi.dwFlags = if down {
+            MOUSEEVENTF_LEFTDOWN
+        } else {
+            MOUSEEVENTF_LEFTUP
+        };
+        if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
+            error!("SendInput failed in send_mouse_hold (down: {})", down);
         }
     }
 }
