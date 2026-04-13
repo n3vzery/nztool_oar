@@ -61,6 +61,7 @@ static GLOBAL_STATE: GlobalInputState = GlobalInputState::new();
 // Worker thread messages for feature execution
 enum WorkerMessage {
     ShiftToggle,
+    FastDrag,
     NoFallDamage,
     HackingPostMessage {
         x: i32,
@@ -454,6 +455,7 @@ define_enum!(FeatureId {
     Restart,
     NoFallDamage,
     ShiftToggle,
+    FastDrag,
     AutoClicker,
     GrabNoGun,
     Bhop,
@@ -536,6 +538,7 @@ struct AppState {
     width: i32,
     height: i32,
     shift_held: bool,
+    fast_drag_active: bool,
     auto_clicker_delay: u32,
     auto_clicker_method: ClickMethod,
     auto_clicker_click_count: u32,
@@ -700,6 +703,13 @@ impl AppState {
                     selecting: false,
                 },
                 Feature {
+                    id: FeatureId::FastDrag,
+                    name: "Fast Dragging".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
                     id: FeatureId::AutoClicker,
                     name: "Auto Clicker".into(),
                     rdev_key: None,
@@ -734,6 +744,7 @@ impl AppState {
             width: 0,
             height: 0,
             shift_held: false,
+            fast_drag_active: false,
             auto_clicker_delay: 6,
             auto_clicker_method: ClickMethod::default(),
             auto_clicker_click_count: 1,
@@ -803,7 +814,27 @@ impl AppState {
         }
     }
 
+    fn toggle_fast_drag(&mut self) {
+        self.fast_drag_active = !self.fast_drag_active;
+        if self.fast_drag_active {
+            send_key_state(0x2A, true);
+            send_mouse_hold(true);
+        } else {
+            send_mouse_hold(false);
+            send_key_state(0x2A, false);
+        }
+    }
+
+    fn release_fast_drag(&mut self) {
+        if self.fast_drag_active {
+            self.fast_drag_active = false;
+            send_mouse_hold(false);
+            send_key_state(0x2A, false);
+        }
+    }
+
     fn reset_to_defaults(&mut self) {
+        self.release_fast_drag();
         self.auto_clicker_delay = 6;
         self.auto_clicker_method = ClickMethod::default();
         self.auto_clicker_click_count = 1;
@@ -1036,6 +1067,11 @@ impl KeyBindApp {
                             s.toggle_shift();
                         }
                     }
+                    WorkerMessage::FastDrag => {
+                        if let Some(mut s) = safe_lock(&worker_state) {
+                            s.toggle_fast_drag();
+                        }
+                    }
                     WorkerMessage::NoFallDamage => {
                         Self::no_fall_damage();
                     }
@@ -1132,6 +1168,7 @@ impl KeyBindApp {
                             // Build worker message for other features
                             let action = match feature_id {
                                 FeatureId::ShiftToggle => Some(WorkerMessage::ShiftToggle),
+                                FeatureId::FastDrag => Some(WorkerMessage::FastDrag),
                                 FeatureId::NoFallDamage => Some(WorkerMessage::NoFallDamage),
                                 FeatureId::HackingPostMessage => {
                                     Some(WorkerMessage::HackingPostMessage {
@@ -1483,10 +1520,12 @@ impl eframe::App for KeyBindApp {
                             if s.features[i].id == FeatureId::ShiftToggle {
                                 s.release_shift();
                             }
+                            if s.features[i].id == FeatureId::FastDrag {
+                                s.release_fast_drag();
+                            }
                             s.features[i].rdev_key = None;
                             s.features[i].enabled = false;
                             s.features[i].selecting = false;
-                            // Save config when reset
                             let _ = s.save_config();
                         }
 
@@ -1502,6 +1541,12 @@ impl eframe::App for KeyBindApp {
                         {
                             color = egui::Color32::BLUE;
                         }
+                        if s.features[i].id == FeatureId::FastDrag
+                            && s.fast_drag_active
+                            && s.features[i].enabled
+                        {
+                            color = egui::Color32::BLUE;
+                        }
 
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
@@ -1513,7 +1558,11 @@ impl eframe::App for KeyBindApp {
                                 {
                                     s.release_shift();
                                 }
-                                // Save config when enable/disable state changes
+                                if !s.features[i].enabled
+                                    && s.features[i].id == FeatureId::FastDrag
+                                {
+                                    s.release_fast_drag();
+                                }
                                 let _ = s.save_config();
                             }
 
@@ -1722,6 +1771,23 @@ fn send_instant_burst_clicks(count: usize) {
         let result = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
         if result == 0 {
             error!("SendInput failed to send {} mouse clicks", count);
+        }
+    }
+}
+
+fn send_mouse_hold(down: bool) {
+    unsafe {
+        let mut input = INPUT {
+            r#type: INPUT_MOUSE,
+            ..Default::default()
+        };
+        input.Anonymous.mi.dwFlags = if down {
+            MOUSEEVENTF_LEFTDOWN
+        } else {
+            MOUSEEVENTF_LEFTUP
+        };
+        if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
+            error!("SendInput failed in send_mouse_hold (down: {})", down);
         }
     }
 }
