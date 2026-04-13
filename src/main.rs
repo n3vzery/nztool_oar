@@ -1155,7 +1155,7 @@ impl KeyBindApp {
                                 drop(s);
                                 if !was_active && now_active {
                                     send_mouse_hold(true);
-                                    thread::sleep(Duration::from_millis(3));
+                                    thread::sleep(Duration::from_millis(30));
                                     send_key_state(0x2A, true);
                                 } else if was_active && !now_active {
                                     send_mouse_hold(false);
