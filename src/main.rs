@@ -113,6 +113,7 @@ enum WorkerMessage {
     GrabNoGun,
     HoldItemBug,
     GunAndTool { digit: u32 },
+    QuickExit { x: i32, y: i32 },
 }
 
 // InputState provides a clean API over the global state
@@ -505,6 +506,7 @@ define_enum!(FeatureId {
     HoldItemBug,
     LmbHoldToggle,
     GunAndTool,
+    QuickExit,
 });
 
 // Serializable structure for config file
@@ -793,6 +795,13 @@ impl AppState {
                 Feature {
                     id: FeatureId::GunAndTool,
                     name: "Gun & Tool (In multiplayer)".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
+                    id: FeatureId::QuickExit,
+                    name: "Quick Exit".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
@@ -1179,6 +1188,9 @@ impl KeyBindApp {
                     WorkerMessage::GunAndTool { digit } => {
                         Self::gun_and_tool(digit);
                     }
+                    WorkerMessage::QuickExit { x, y } => {
+                        Self::quick_exit(x, y);
+                    }
                 }
             }
         });
@@ -1280,6 +1292,7 @@ impl KeyBindApp {
                                 FeatureId::GrabNoGun => Some(WorkerMessage::GrabNoGun),
                                 FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
                                 FeatureId::GunAndTool => Some(WorkerMessage::GunAndTool { digit: gun_digit }),
+                                FeatureId::QuickExit => Some(WorkerMessage::QuickExit { x, y }),
                                 _ => None,
                             };
 
@@ -1480,6 +1493,14 @@ impl KeyBindApp {
         send_key_tap(digit as u16 + 1);
         thread::sleep(Duration::from_millis(100));
         send_key_tap(0x01); // ESC
+    }
+    
+    fn quick_exit(x_offset: i32, y_offset: i32) {
+        send_key_tap(0x01);
+        move_mouse(x_offset + 722, y_offset + 731);
+        send_mouse_click();
+        move_mouse(x_offset + 719, y_offset + 546);
+        send_mouse_click();
     }
 
     fn send_mouse_state(down: bool) {
