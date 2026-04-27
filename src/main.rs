@@ -90,6 +90,7 @@ enum WorkerMessage {
     },
     GrabNoGun,
     HoldItemBug,
+    GunAndTool { digit: u32 },
 }
 
 // InputState provides a clean API over the global state
@@ -478,6 +479,7 @@ define_enum!(FeatureId {
     Bhop,
     HoldItemBug,
     LmbHoldToggle,
+    GunAndTool,
 });
 
 // Serializable structure for config file
@@ -515,6 +517,8 @@ struct SerializableConfig {
     hacking_y_offset: i32,
     #[serde(default = "default_hacking2_y")]
     hacking2_y_offset: i32,
+    #[serde(default = "default_gun_tool_digit")]
+    gun_tool_digit: u32,
 }
 
 fn default_tips_skip_y() -> i32 {
@@ -530,6 +534,9 @@ fn default_hacking2_y() -> i32 {
     -140
 }
 fn default_auto_clicker_click_count() -> u32 {
+    1
+}
+fn default_gun_tool_digit() -> u32 {
     1
 }
 
@@ -565,6 +572,7 @@ struct AppState {
     restart_y_offset: i32,
     hacking_y_offset: i32,
     hacking2_y_offset: i32,
+    gun_tool_digit: u32,
 }
 
 // Get the path to the config directory and file
@@ -620,6 +628,7 @@ impl AppState {
             restart_y_offset: self.restart_y_offset,
             hacking_y_offset: self.hacking_y_offset,
             hacking2_y_offset: self.hacking2_y_offset,
+            gun_tool_digit: self.gun_tool_digit,
         };
 
         // Write to file with pretty formatting
@@ -668,6 +677,7 @@ impl AppState {
         self.restart_y_offset = config.restart_y_offset;
         self.hacking_y_offset = config.hacking_y_offset;
         self.hacking2_y_offset = config.hacking2_y_offset;
+        self.gun_tool_digit = config.gun_tool_digit;
 
         Ok(())
     }
@@ -754,6 +764,13 @@ impl AppState {
                     enabled: false,
                     selecting: false,
                 },
+                Feature {
+                    id: FeatureId::GunAndTool,
+                    name: "Gun & Tool".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -770,6 +787,7 @@ impl AppState {
             restart_y_offset: 486,
             hacking_y_offset: -140,
             hacking2_y_offset: -140,
+            gun_tool_digit: 1,
         };
         state.update_screen_position();
 
@@ -840,6 +858,7 @@ impl AppState {
         self.restart_y_offset = 486;
         self.hacking_y_offset = -140;
         self.hacking2_y_offset = -140;
+        self.gun_tool_digit = 1;
         self.monitor_id = "1".to_string();
         self.update_screen_position();
     }
@@ -1129,6 +1148,9 @@ impl KeyBindApp {
                     WorkerMessage::HoldItemBug => {
                         Self::hold_item_bug();
                     }
+                    WorkerMessage::GunAndTool { digit } => {
+                        Self::gun_and_tool(digit);
+                    }
                 }
             }
         });
@@ -1177,6 +1199,7 @@ impl KeyBindApp {
                             let restart_y = s.restart_y_offset;
                             let hack_y = s.hacking_y_offset;
                             let hack2_y = s.hacking2_y_offset;
+                            let gun_digit = s.gun_tool_digit;
 
                             // Handle toggle features immediately
                             if feature_id == FeatureId::AutoClicker {
@@ -1228,6 +1251,7 @@ impl KeyBindApp {
                                 }),
                                 FeatureId::GrabNoGun => Some(WorkerMessage::GrabNoGun),
                                 FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
+                                FeatureId::GunAndTool => Some(WorkerMessage::GunAndTool { digit: gun_digit }),
                                 _ => None,
                             };
 
@@ -1415,6 +1439,17 @@ impl KeyBindApp {
         Self::send_mouse_state(false);
         thread::sleep(Duration::from_millis(HOLD_ITEM_TAP_DELAY_MS));
         send_key_tap(0x01);
+    }
+
+    fn gun_and_tool(digit: u32) {
+        send_mouse_click();
+        thread::sleep(Duration::from_millis(RESTART_KEY_DELAY_MS));
+        send_key_tap(0x01); // ESC
+        thread::sleep(Duration::from_millis(RESTART_KEY_DELAY_MS));
+        // 1=0x02, 2=0x03, 3=0x04
+        send_key_tap(digit as u16 + 1);
+        thread::sleep(Duration::from_millis(RESTART_KEY_DELAY_MS));
+        send_key_tap(0x01); // ESC
     }
 
     fn send_mouse_state(down: bool) {
@@ -1690,6 +1725,16 @@ impl eframe::App for KeyBindApp {
                     ui.horizontal(|ui| {
                         ui.label("Hacking2 Y Offset:");
                         ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0));
+                    });
+
+                    ui.add_space(5.0);
+
+                    // Gun & Tool Digit
+                    ui.horizontal(|ui| {
+                        ui.label("Gun & Tool Digit:");
+                        if ui.add(egui::Slider::new(&mut s.gun_tool_digit, 1..=3)).changed() {
+                            let _ = s.save_config();
+                        }
                     });
 
                     ui.add_space(10.0);
