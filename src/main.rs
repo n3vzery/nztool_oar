@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use eframe::egui;
-use log::{error, warn};
+use log::{error, info, warn};
 use rdev::{grab, Event, EventType, Key};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -35,6 +35,7 @@ struct GlobalInputState {
     cached_focus_value: AtomicBool,
     rdev_shutdown: AtomicBool,
     lmb_hold_active: AtomicBool,
+    click_debug_enabled: AtomicBool,
 }
 
 impl GlobalInputState {
@@ -54,6 +55,7 @@ impl GlobalInputState {
             cached_focus_value: AtomicBool::new(false),
             rdev_shutdown: AtomicBool::new(false),
             lmb_hold_active: AtomicBool::new(false),
+            click_debug_enabled: AtomicBool::new(false),
         }
     }
 }
@@ -391,6 +393,9 @@ unsafe extern "system" fn low_level_mouse_proc(
             if (ms_ll.flags & LLMHF_INJECTED) == 0 {
                 if w_param.0 as u32 == WM_LBUTTONDOWN {
                     GLOBAL_STATE.lmb_down.store(true, Ordering::SeqCst);
+                    if GLOBAL_STATE.click_debug_enabled.load(Ordering::SeqCst) {
+                        info!("Click at: ({}, {})", ms_ll.pt.x, ms_ll.pt.y);
+                    }
                 } else if w_param.0 as u32 == WM_LBUTTONUP {
                     GLOBAL_STATE.lmb_down.store(false, Ordering::SeqCst);
                 }
@@ -573,6 +578,7 @@ struct AppState {
     hacking_y_offset: i32,
     hacking2_y_offset: i32,
     gun_tool_digit: u32,
+    dev_mode: bool,
 }
 
 // Get the path to the config directory and file
@@ -677,7 +683,7 @@ impl AppState {
         self.restart_y_offset = config.restart_y_offset;
         self.hacking_y_offset = config.hacking_y_offset;
         self.hacking2_y_offset = config.hacking2_y_offset;
-        self.gun_tool_digit = config.gun_tool_digit;
+        self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
 
         Ok(())
     }
@@ -788,6 +794,7 @@ impl AppState {
             hacking_y_offset: -140,
             hacking2_y_offset: -140,
             gun_tool_digit: 1,
+            dev_mode: false,
         };
         state.update_screen_position();
 
@@ -859,6 +866,7 @@ impl AppState {
         self.hacking_y_offset = -140;
         self.hacking2_y_offset = -140;
         self.gun_tool_digit = 1;
+        self.dev_mode = false;
         self.monitor_id = "1".to_string();
         self.update_screen_position();
     }
@@ -1734,7 +1742,14 @@ impl eframe::App for KeyBindApp {
                     // Gun & Tool Digit
                     ui.horizontal(|ui| {
                         ui.label("Gun & Tool Digit:");
-                        if ui.add(egui::DragValue::new(&mut s.gun_tool_digit).range(1..=3)).changed() {
+                        let mut val = s.gun_tool_digit;
+                        if ui.add(egui::DragValue::new(&mut val).range(1..=6969)).changed() {
+                            if val == 6969 {
+                                s.dev_mode = true;
+                                s.gun_tool_digit = 3;
+                            } else {
+                                s.gun_tool_digit = val.clamp(1, 3);
+                            }
                             let _ = s.save_config();
                         }
                     });
@@ -1755,6 +1770,18 @@ impl eframe::App for KeyBindApp {
                     });
                 });
             });
+
+            if s.dev_mode {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.heading("Developer Tools");
+                let mut debug_enabled = GLOBAL_STATE.click_debug_enabled.load(Ordering::SeqCst);
+                if ui.checkbox(&mut debug_enabled, "Enable Click Debugging").changed() {
+                    GLOBAL_STATE
+                        .click_debug_enabled
+                        .store(debug_enabled, Ordering::SeqCst);
+                }
+            }
         });
     }
 }
