@@ -766,7 +766,7 @@ impl AppState {
                 },
                 Feature {
                     id: FeatureId::GunAndTool,
-                    name: "Gun & Tool".into(),
+                    name: "Gun & Tool (In multiplayer)".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
@@ -1442,13 +1442,15 @@ impl KeyBindApp {
     }
 
     fn gun_and_tool(digit: u32) {
-        send_mouse_click();
-        thread::sleep(Duration::from_millis(RESTART_KEY_DELAY_MS));
+        Self::send_mouse_state(true);
+        thread::sleep(Duration::from_millis(100));
         send_key_tap(0x01); // ESC
-        thread::sleep(Duration::from_millis(RESTART_KEY_DELAY_MS));
+        thread::sleep(Duration::from_millis(100));
+        Self::send_mouse_state(false);
+        thread::sleep(Duration::from_millis(100));
         // 1=0x02, 2=0x03, 3=0x04
         send_key_tap(digit as u16 + 1);
-        thread::sleep(Duration::from_millis(RESTART_KEY_DELAY_MS));
+        thread::sleep(Duration::from_millis(100));
         send_key_tap(0x01); // ESC
     }
 
@@ -1732,7 +1734,7 @@ impl eframe::App for KeyBindApp {
                     // Gun & Tool Digit
                     ui.horizontal(|ui| {
                         ui.label("Gun & Tool Digit:");
-                        if ui.add(egui::Slider::new(&mut s.gun_tool_digit, 1..=3)).changed() {
+                        if ui.add(egui::DragValue::new(&mut s.gun_tool_digit).range(1..=3)).changed() {
                             let _ = s.save_config();
                         }
                     });
