@@ -34,6 +34,7 @@ struct GlobalInputState {
     last_focus_check: AtomicU64,
     cached_focus_value: AtomicBool,
     rdev_shutdown: AtomicBool,
+    lmb_hold_active: AtomicBool,
 }
 
 impl GlobalInputState {
@@ -52,6 +53,7 @@ impl GlobalInputState {
             last_focus_check: AtomicU64::new(0),
             cached_focus_value: AtomicBool::new(false),
             rdev_shutdown: AtomicBool::new(false),
+            lmb_hold_active: AtomicBool::new(false),
         }
     }
 }
@@ -133,6 +135,22 @@ impl InputState {
 
     fn is_bhop_active(&self) -> bool {
         GLOBAL_STATE.bhop_active.load(Ordering::SeqCst)
+    }
+
+    fn toggle_lmb_hold(&self) -> bool {
+        let current = GLOBAL_STATE.lmb_hold_active.load(Ordering::SeqCst);
+        GLOBAL_STATE
+            .lmb_hold_active
+            .store(!current, Ordering::SeqCst);
+        !current
+    }
+
+    fn is_lmb_hold_active(&self) -> bool {
+        GLOBAL_STATE.lmb_hold_active.load(Ordering::SeqCst)
+    }
+
+    fn set_lmb_hold_active(&self, active: bool) {
+        GLOBAL_STATE.lmb_hold_active.store(active, Ordering::SeqCst);
     }
 
     #[allow(dead_code)]
@@ -459,6 +477,7 @@ define_enum!(FeatureId {
     GrabNoGun,
     Bhop,
     HoldItemBug,
+    LmbHoldToggle,
 });
 
 // Serializable structure for config file
@@ -724,6 +743,13 @@ impl AppState {
                 Feature {
                     id: FeatureId::HoldItemBug,
                     name: "Hold Item Bug".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
+                    id: FeatureId::LmbHoldToggle,
+                    name: "LMB Hold Toggle".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
@@ -1027,6 +1053,39 @@ impl KeyBindApp {
             }
         });
 
+        // LMB Hold Toggle worker thread
+        let state_clone_lmb_hold = state.clone();
+        let input_lmb_hold = input_state.clone();
+        thread::spawn(move || {
+            let mut was_active_and_focused = false;
+            loop {
+                let enabled = {
+                    let Some(s) = safe_lock(&state_clone_lmb_hold) else {
+                        error!("Failed to lock state in LMB hold thread");
+                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                        continue;
+                    };
+                    s.features.iter().any(|f| f.id == FeatureId::LmbHoldToggle && f.enabled)
+                };
+
+                let active = input_lmb_hold.is_lmb_hold_active();
+                let focused = is_game_focused();
+                let currently_active = active && enabled && focused;
+
+                if currently_active {
+                    send_mouse_hold(true);
+                    was_active_and_focused = true;
+                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                } else {
+                    if was_active_and_focused {
+                        send_mouse_hold(false);
+                        was_active_and_focused = false;
+                    }
+                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                }
+            }
+        });
+
         // Worker thread for feature execution
         let worker_state = state.clone();
         thread::spawn(move || {
@@ -1127,6 +1186,11 @@ impl KeyBindApp {
 
                             if feature_id == FeatureId::Bhop {
                                 let _ = input_hotkey.toggle_bhop();
+                                return None;
+                            }
+
+                            if feature_id == FeatureId::LmbHoldToggle {
+                                let _ = input_hotkey.toggle_lmb_hold();
                                 return None;
                             }
 
@@ -1484,6 +1548,10 @@ impl eframe::App for KeyBindApp {
                             if s.features[i].id == FeatureId::ShiftToggle {
                                 s.release_shift();
                             }
+                            if s.features[i].id == FeatureId::LmbHoldToggle {
+                                InputState.set_lmb_hold_active(false);
+                                send_mouse_hold(false);
+                            }
                             s.features[i].rdev_key = None;
                             s.features[i].enabled = false;
                             s.features[i].selecting = false;
@@ -1501,16 +1569,26 @@ impl eframe::App for KeyBindApp {
                         {
                             color = egui::Color32::BLUE;
                         }
+                        if s.features[i].id == FeatureId::LmbHoldToggle
+                            && InputState.is_lmb_hold_active()
+                            && s.features[i].enabled
+                        {
+                            color = egui::Color32::BLUE;
+                        }
 
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
                             .clicked()
                             && s.features[i].rdev_key.is_some() {
                                 s.features[i].enabled = !s.features[i].enabled;
-                                if !s.features[i].enabled
-                                    && s.features[i].id == FeatureId::ShiftToggle
-                                {
-                                    s.release_shift();
+                                if !s.features[i].enabled {
+                                    if s.features[i].id == FeatureId::ShiftToggle {
+                                        s.release_shift();
+                                    }
+                                    if s.features[i].id == FeatureId::LmbHoldToggle {
+                                        InputState.set_lmb_hold_active(false);
+                                        send_mouse_hold(false);
+                                    }
                                 }
                                 let _ = s.save_config();
                             }
@@ -1724,8 +1802,6 @@ fn send_instant_burst_clicks(count: usize) {
     }
 }
 
-// TODO: send_mouse_hold - used by FastDrag (planned for future implementation)
-#[allow(dead_code)]
 fn send_mouse_hold(down: bool) {
     unsafe {
         let mut input = INPUT {
