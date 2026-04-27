@@ -387,6 +387,7 @@ const MOUSE_CLICK_PRE_DELAY_MS: u64 = 10;
 const HOLD_ITEM_TAP_DELAY_MS: u64 = 7;
 const RESTART_KEY_DELAY_MS: u64 = 100;
 const NO_FALL_DAMAGE_DELAY_MS: u64 = 30;
+const QUICK_EXIT_DELAY_MS: u64 = 60;
 const BHOP_TAP_INTERVAL_MS: u64 = 15;
 const POLL_INTERVAL_MS: u64 = 5;
 const AUTO_CLICKER_MIN_DELAY_MS: u32 = 1;
@@ -1496,10 +1497,14 @@ impl KeyBindApp {
     }
     
     fn quick_exit(x_offset: i32, y_offset: i32) {
-        send_key_tap(0x01);
+        send_key_tap(0x01); // ESC
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
         move_mouse(x_offset + 722, y_offset + 731);
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
         send_mouse_click();
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
         move_mouse(x_offset + 719, y_offset + 546);
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
         send_mouse_click();
     }
 
