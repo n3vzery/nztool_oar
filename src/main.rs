@@ -11,12 +11,32 @@ use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Console::*;
 use windows::Win32::System::ProcessStatus::*;
 use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+// Simple logger implementation to output to console
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            println!("{} - {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: SimpleLogger = SimpleLogger;
 
 // Global input state - consolidated structure
 // Kept as statics because Windows hooks require them (hooks run in system context)
@@ -1780,6 +1800,22 @@ impl eframe::App for KeyBindApp {
                     GLOBAL_STATE
                         .click_debug_enabled
                         .store(debug_enabled, Ordering::SeqCst);
+                    unsafe {
+                        if debug_enabled {
+                            let _ = AllocConsole();
+                        } else {
+                            let _ = FreeConsole();
+                        }
+                    }
+                }
+
+                if ui.button("Open Log Directory").clicked() {
+                    let config_path = get_config_path();
+                    if let Some(parent) = config_path.parent() {
+                        let _ = std::process::Command::new("explorer")
+                            .arg(parent)
+                            .spawn();
+                    }
                 }
             }
         });
@@ -2051,6 +2087,7 @@ fn rdev_key_to_name(key: Key) -> String {
 }
 
 fn main() -> eframe::Result {
+    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
