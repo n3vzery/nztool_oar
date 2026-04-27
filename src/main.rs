@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use eframe::egui;
-use log::{error, warn};
+use log::{error, info, warn};
 use rdev::{grab, Event, EventType, Key};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -11,12 +11,32 @@ use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Console::*;
 use windows::Win32::System::ProcessStatus::*;
 use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+// Simple logger implementation to output to console
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            println!("{} - {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: SimpleLogger = SimpleLogger;
 
 // Global input state - consolidated structure
 // Kept as statics because Windows hooks require them (hooks run in system context)
@@ -34,6 +54,8 @@ struct GlobalInputState {
     last_focus_check: AtomicU64,
     cached_focus_value: AtomicBool,
     rdev_shutdown: AtomicBool,
+    lmb_hold_active: AtomicBool,
+    click_debug_enabled: AtomicBool,
 }
 
 impl GlobalInputState {
@@ -52,6 +74,8 @@ impl GlobalInputState {
             last_focus_check: AtomicU64::new(0),
             cached_focus_value: AtomicBool::new(false),
             rdev_shutdown: AtomicBool::new(false),
+            lmb_hold_active: AtomicBool::new(false),
+            click_debug_enabled: AtomicBool::new(false),
         }
     }
 }
@@ -88,6 +112,8 @@ enum WorkerMessage {
     },
     GrabNoGun,
     HoldItemBug,
+    GunAndTool { digit: u32 },
+    QuickExit { x: i32, y: i32 },
 }
 
 // InputState provides a clean API over the global state
@@ -133,6 +159,22 @@ impl InputState {
 
     fn is_bhop_active(&self) -> bool {
         GLOBAL_STATE.bhop_active.load(Ordering::SeqCst)
+    }
+
+    fn toggle_lmb_hold(&self) -> bool {
+        let current = GLOBAL_STATE.lmb_hold_active.load(Ordering::SeqCst);
+        GLOBAL_STATE
+            .lmb_hold_active
+            .store(!current, Ordering::SeqCst);
+        !current
+    }
+
+    fn is_lmb_hold_active(&self) -> bool {
+        GLOBAL_STATE.lmb_hold_active.load(Ordering::SeqCst)
+    }
+
+    fn set_lmb_hold_active(&self, active: bool) {
+        GLOBAL_STATE.lmb_hold_active.store(active, Ordering::SeqCst);
     }
 
     #[allow(dead_code)]
@@ -345,6 +387,7 @@ const MOUSE_CLICK_PRE_DELAY_MS: u64 = 10;
 const HOLD_ITEM_TAP_DELAY_MS: u64 = 7;
 const RESTART_KEY_DELAY_MS: u64 = 100;
 const NO_FALL_DAMAGE_DELAY_MS: u64 = 30;
+const QUICK_EXIT_DELAY_MS: u64 = 60;
 const BHOP_TAP_INTERVAL_MS: u64 = 15;
 const POLL_INTERVAL_MS: u64 = 5;
 const AUTO_CLICKER_MIN_DELAY_MS: u32 = 1;
@@ -372,6 +415,9 @@ unsafe extern "system" fn low_level_mouse_proc(
             if (ms_ll.flags & LLMHF_INJECTED) == 0 {
                 if w_param.0 as u32 == WM_LBUTTONDOWN {
                     GLOBAL_STATE.lmb_down.store(true, Ordering::SeqCst);
+                    if GLOBAL_STATE.click_debug_enabled.load(Ordering::SeqCst) {
+                        info!("Click at: ({}, {})", ms_ll.pt.x, ms_ll.pt.y);
+                    }
                 } else if w_param.0 as u32 == WM_LBUTTONUP {
                     GLOBAL_STATE.lmb_down.store(false, Ordering::SeqCst);
                 }
@@ -459,6 +505,9 @@ define_enum!(FeatureId {
     GrabNoGun,
     Bhop,
     HoldItemBug,
+    LmbHoldToggle,
+    GunAndTool,
+    QuickExit,
 });
 
 // Serializable structure for config file
@@ -496,6 +545,8 @@ struct SerializableConfig {
     hacking_y_offset: i32,
     #[serde(default = "default_hacking2_y")]
     hacking2_y_offset: i32,
+    #[serde(default = "default_gun_tool_digit")]
+    gun_tool_digit: u32,
 }
 
 fn default_tips_skip_y() -> i32 {
@@ -511,6 +562,9 @@ fn default_hacking2_y() -> i32 {
     -140
 }
 fn default_auto_clicker_click_count() -> u32 {
+    1
+}
+fn default_gun_tool_digit() -> u32 {
     1
 }
 
@@ -546,6 +600,8 @@ struct AppState {
     restart_y_offset: i32,
     hacking_y_offset: i32,
     hacking2_y_offset: i32,
+    gun_tool_digit: u32,
+    dev_mode: bool,
 }
 
 // Get the path to the config directory and file
@@ -601,6 +657,7 @@ impl AppState {
             restart_y_offset: self.restart_y_offset,
             hacking_y_offset: self.hacking_y_offset,
             hacking2_y_offset: self.hacking2_y_offset,
+            gun_tool_digit: self.gun_tool_digit,
         };
 
         // Write to file with pretty formatting
@@ -649,6 +706,7 @@ impl AppState {
         self.restart_y_offset = config.restart_y_offset;
         self.hacking_y_offset = config.hacking_y_offset;
         self.hacking2_y_offset = config.hacking2_y_offset;
+        self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
 
         Ok(())
     }
@@ -728,6 +786,27 @@ impl AppState {
                     enabled: false,
                     selecting: false,
                 },
+                Feature {
+                    id: FeatureId::LmbHoldToggle,
+                    name: "LMB Hold Toggle".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
+                    id: FeatureId::GunAndTool,
+                    name: "Gun & Tool (In multiplayer)".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
+                    id: FeatureId::QuickExit,
+                    name: "Quick Exit".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -744,6 +823,8 @@ impl AppState {
             restart_y_offset: 486,
             hacking_y_offset: -140,
             hacking2_y_offset: -140,
+            gun_tool_digit: 1,
+            dev_mode: false,
         };
         state.update_screen_position();
 
@@ -814,6 +895,8 @@ impl AppState {
         self.restart_y_offset = 486;
         self.hacking_y_offset = -140;
         self.hacking2_y_offset = -140;
+        self.gun_tool_digit = 1;
+        self.dev_mode = false;
         self.monitor_id = "1".to_string();
         self.update_screen_position();
     }
@@ -1027,6 +1110,39 @@ impl KeyBindApp {
             }
         });
 
+        // LMB Hold Toggle worker thread
+        let state_clone_lmb_hold = state.clone();
+        let input_lmb_hold = input_state.clone();
+        thread::spawn(move || {
+            let mut was_active_and_focused = false;
+            loop {
+                let enabled = {
+                    let Some(s) = safe_lock(&state_clone_lmb_hold) else {
+                        error!("Failed to lock state in LMB hold thread");
+                        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                        continue;
+                    };
+                    s.features.iter().any(|f| f.id == FeatureId::LmbHoldToggle && f.enabled)
+                };
+
+                let active = input_lmb_hold.is_lmb_hold_active();
+                let focused = is_game_focused();
+                let currently_active = active && enabled && focused;
+
+                if currently_active {
+                    send_mouse_hold(true);
+                    was_active_and_focused = true;
+                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                } else {
+                    if was_active_and_focused {
+                        send_mouse_hold(false);
+                        was_active_and_focused = false;
+                    }
+                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                }
+            }
+        });
+
         // Worker thread for feature execution
         let worker_state = state.clone();
         thread::spawn(move || {
@@ -1069,6 +1185,12 @@ impl KeyBindApp {
                     }
                     WorkerMessage::HoldItemBug => {
                         Self::hold_item_bug();
+                    }
+                    WorkerMessage::GunAndTool { digit } => {
+                        Self::gun_and_tool(digit);
+                    }
+                    WorkerMessage::QuickExit { x, y } => {
+                        Self::quick_exit(x, y);
                     }
                 }
             }
@@ -1118,6 +1240,7 @@ impl KeyBindApp {
                             let restart_y = s.restart_y_offset;
                             let hack_y = s.hacking_y_offset;
                             let hack2_y = s.hacking2_y_offset;
+                            let gun_digit = s.gun_tool_digit;
 
                             // Handle toggle features immediately
                             if feature_id == FeatureId::AutoClicker {
@@ -1127,6 +1250,11 @@ impl KeyBindApp {
 
                             if feature_id == FeatureId::Bhop {
                                 let _ = input_hotkey.toggle_bhop();
+                                return None;
+                            }
+
+                            if feature_id == FeatureId::LmbHoldToggle {
+                                let _ = input_hotkey.toggle_lmb_hold();
                                 return None;
                             }
 
@@ -1164,6 +1292,8 @@ impl KeyBindApp {
                                 }),
                                 FeatureId::GrabNoGun => Some(WorkerMessage::GrabNoGun),
                                 FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
+                                FeatureId::GunAndTool => Some(WorkerMessage::GunAndTool { digit: gun_digit }),
+                                FeatureId::QuickExit => Some(WorkerMessage::QuickExit { x, y }),
                                 _ => None,
                             };
 
@@ -1353,6 +1483,31 @@ impl KeyBindApp {
         send_key_tap(0x01);
     }
 
+    fn gun_and_tool(digit: u32) {
+        Self::send_mouse_state(true);
+        thread::sleep(Duration::from_millis(100));
+        send_key_tap(0x01); // ESC
+        thread::sleep(Duration::from_millis(100));
+        Self::send_mouse_state(false);
+        thread::sleep(Duration::from_millis(100));
+        // 1=0x02, 2=0x03, 3=0x04
+        send_key_tap(digit as u16 + 1);
+        thread::sleep(Duration::from_millis(100));
+        send_key_tap(0x01); // ESC
+    }
+    
+    fn quick_exit(x_offset: i32, y_offset: i32) {
+        send_key_tap(0x01); // ESC
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
+        move_mouse(x_offset + 722, y_offset + 731);
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
+        send_mouse_click();
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
+        move_mouse(x_offset + 719, y_offset + 546);
+        thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
+        send_mouse_click();
+    }
+
     fn send_mouse_state(down: bool) {
         unsafe {
             let mut input = INPUT {
@@ -1484,6 +1639,10 @@ impl eframe::App for KeyBindApp {
                             if s.features[i].id == FeatureId::ShiftToggle {
                                 s.release_shift();
                             }
+                            if s.features[i].id == FeatureId::LmbHoldToggle {
+                                InputState.set_lmb_hold_active(false);
+                                send_mouse_hold(false);
+                            }
                             s.features[i].rdev_key = None;
                             s.features[i].enabled = false;
                             s.features[i].selecting = false;
@@ -1501,16 +1660,26 @@ impl eframe::App for KeyBindApp {
                         {
                             color = egui::Color32::BLUE;
                         }
+                        if s.features[i].id == FeatureId::LmbHoldToggle
+                            && InputState.is_lmb_hold_active()
+                            && s.features[i].enabled
+                        {
+                            color = egui::Color32::BLUE;
+                        }
 
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
                             .clicked()
                             && s.features[i].rdev_key.is_some() {
                                 s.features[i].enabled = !s.features[i].enabled;
-                                if !s.features[i].enabled
-                                    && s.features[i].id == FeatureId::ShiftToggle
-                                {
-                                    s.release_shift();
+                                if !s.features[i].enabled {
+                                    if s.features[i].id == FeatureId::ShiftToggle {
+                                        s.release_shift();
+                                    }
+                                    if s.features[i].id == FeatureId::LmbHoldToggle {
+                                        InputState.set_lmb_hold_active(false);
+                                        send_mouse_hold(false);
+                                    }
                                 }
                                 let _ = s.save_config();
                             }
@@ -1614,6 +1783,23 @@ impl eframe::App for KeyBindApp {
                         ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0));
                     });
 
+                    ui.add_space(5.0);
+
+                    // Gun & Tool Digit
+                    ui.horizontal(|ui| {
+                        ui.label("Gun & Tool Digit:");
+                        let mut val = s.gun_tool_digit;
+                        if ui.add(egui::DragValue::new(&mut val).range(1..=6969)).changed() {
+                            if val == 6969 {
+                                s.dev_mode = true;
+                                s.gun_tool_digit = 3;
+                            } else {
+                                s.gun_tool_digit = val.clamp(1, 3);
+                            }
+                            let _ = s.save_config();
+                        }
+                    });
+
                     ui.add_space(10.0);
 
                     // Save/Load/Default buttons for Screen Editor
@@ -1630,6 +1816,34 @@ impl eframe::App for KeyBindApp {
                     });
                 });
             });
+
+            if s.dev_mode {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.heading("Developer Tools");
+                let mut debug_enabled = GLOBAL_STATE.click_debug_enabled.load(Ordering::SeqCst);
+                if ui.checkbox(&mut debug_enabled, "Enable Click Debugging").changed() {
+                    GLOBAL_STATE
+                        .click_debug_enabled
+                        .store(debug_enabled, Ordering::SeqCst);
+                    unsafe {
+                        if debug_enabled {
+                            let _ = AllocConsole();
+                        } else {
+                            let _ = FreeConsole();
+                        }
+                    }
+                }
+
+                if ui.button("Open Log Directory").clicked() {
+                    let config_path = get_config_path();
+                    if let Some(parent) = config_path.parent() {
+                        let _ = std::process::Command::new("explorer")
+                            .arg(parent)
+                            .spawn();
+                    }
+                }
+            }
         });
     }
 }
@@ -1724,8 +1938,6 @@ fn send_instant_burst_clicks(count: usize) {
     }
 }
 
-// TODO: send_mouse_hold - used by FastDrag (planned for future implementation)
-#[allow(dead_code)]
 fn send_mouse_hold(down: bool) {
     unsafe {
         let mut input = INPUT {
@@ -1901,6 +2113,7 @@ fn rdev_key_to_name(key: Key) -> String {
 }
 
 fn main() -> eframe::Result {
+    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
