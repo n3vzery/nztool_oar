@@ -1,5 +1,22 @@
 # Changelog - Rust OAR Helper
 
+## Version 2.3.0 - May 14, 2024
+
+### 🚀 New Features
+
+#### Toggle All Macros
+- Added a new master switch feature: **Toggle All Macros**.
+- Dedicated keybind to disable/enable all other macros at once.
+- Visual feedback in UI: Shows "ALL MACROS DISABLED" in red when active.
+- AutoClicker and Bhop worker loops now respect the master switch.
+- Hotkey interception is bypassed when macros are globally disabled, ensuring normal keyboard input is preserved.
+
+### 🎮 Improvements
+- Updated versioning across the project.
+- Enhanced global state management with a new master switch flag.
+
+---
+
 ## Version 2.0.3 - April 12, 2026
 
 ### 🎮 New Features

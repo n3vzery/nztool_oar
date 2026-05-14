@@ -56,6 +56,7 @@ struct GlobalInputState {
     rdev_shutdown: AtomicBool,
     lmb_hold_active: AtomicBool,
     click_debug_enabled: AtomicBool,
+    all_macros_disabled: AtomicBool,
 }
 
 impl GlobalInputState {
@@ -76,6 +77,7 @@ impl GlobalInputState {
             rdev_shutdown: AtomicBool::new(false),
             lmb_hold_active: AtomicBool::new(false),
             click_debug_enabled: AtomicBool::new(false),
+            all_macros_disabled: AtomicBool::new(false),
         }
     }
 }
@@ -214,6 +216,18 @@ impl InputState {
 
     fn get_keyboard_hook_thread_id(&self) -> u32 {
         GLOBAL_STATE.keyboard_hook_thread_id.load(Ordering::SeqCst)
+    }
+
+    fn toggle_all_macros_disabled(&self) -> bool {
+        let current = GLOBAL_STATE.all_macros_disabled.load(Ordering::SeqCst);
+        GLOBAL_STATE
+            .all_macros_disabled
+            .store(!current, Ordering::SeqCst);
+        !current
+    }
+
+    fn are_all_macros_disabled(&self) -> bool {
+        GLOBAL_STATE.all_macros_disabled.load(Ordering::SeqCst)
     }
 }
 
@@ -508,6 +522,7 @@ define_enum!(FeatureId {
     LmbHoldToggle,
     GunAndTool,
     QuickExit,
+    ToggleAllMacros,
 });
 
 // Serializable structure for config file
@@ -807,6 +822,13 @@ impl AppState {
                     enabled: false,
                     selecting: false,
                 },
+                Feature {
+                    id: FeatureId::ToggleAllMacros,
+                    name: "Toggle All Macros".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -1034,8 +1056,9 @@ impl KeyBindApp {
         thread::spawn(move || {
             loop {
                 let bhop_enabled = input_bhop.is_bhop_active();
+                let all_disabled = input_bhop.are_all_macros_disabled();
 
-                if bhop_enabled && is_game_focused() {
+                if bhop_enabled && is_game_focused() && !all_disabled {
                     if input_bhop.is_space_down() {
                         send_key_tap(0x39); // Space key
                         thread::sleep(Duration::from_millis(BHOP_TAP_INTERVAL_MS));
@@ -1055,8 +1078,9 @@ impl KeyBindApp {
             let mut prev_shift = false;
             loop {
                 let shift_down = input_mod_poll.is_shift_down();
+                let all_disabled = input_mod_poll.are_all_macros_disabled();
 
-                if is_game_focused() {
+                if is_game_focused() && !all_disabled {
                     let Some(s) = safe_lock(&state_clone_mod) else {
                         error!("Failed to lock state in modifier polling thread");
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -1093,8 +1117,9 @@ impl KeyBindApp {
                     (enabled, s.auto_clicker_delay, s.auto_clicker_method, s.auto_clicker_click_count)
                 };
                 let active = input_ac.is_autoclicker_active();
+                let all_disabled = input_ac.are_all_macros_disabled();
 
-                if active && enabled && is_game_focused() {
+                if active && enabled && is_game_focused() && !all_disabled {
                     if input_ac.is_lmb_down() {
                         match click_method {
                             ClickMethod::SendInput => send_mouse_click(),
@@ -1127,7 +1152,8 @@ impl KeyBindApp {
 
                 let active = input_lmb_hold.is_lmb_hold_active();
                 let focused = is_game_focused();
-                let currently_active = active && enabled && focused;
+                let all_disabled = input_lmb_hold.are_all_macros_disabled();
+                let currently_active = active && enabled && focused && !all_disabled;
 
                 if currently_active {
                     send_mouse_hold(true);
@@ -1243,6 +1269,15 @@ impl KeyBindApp {
                             let gun_digit = s.gun_tool_digit;
 
                             // Handle toggle features immediately
+                            if feature_id == FeatureId::ToggleAllMacros {
+                                let _ = input_hotkey.toggle_all_macros_disabled();
+                                return None;
+                            }
+
+                            if input_hotkey.are_all_macros_disabled() {
+                                return Some(event);
+                            }
+
                             if feature_id == FeatureId::AutoClicker {
                                 let _ = input_hotkey.toggle_autoclicker();
                                 return None;
@@ -1611,6 +1646,9 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Nztool OAR (Rust edition)");
+            if InputState.are_all_macros_disabled() {
+                ui.colored_label(egui::Color32::RED, "ALL MACROS DISABLED");
+            }
             ui.add_space(10.0);
 
             egui::Grid::new("features_grid")
@@ -1666,6 +1704,12 @@ impl eframe::App for KeyBindApp {
                         {
                             color = egui::Color32::BLUE;
                         }
+                        if s.features[i].id == FeatureId::ToggleAllMacros
+                            && InputState.are_all_macros_disabled()
+                            && s.features[i].enabled
+                        {
+                            color = egui::Color32::BLUE;
+                        }
 
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
@@ -1679,6 +1723,9 @@ impl eframe::App for KeyBindApp {
                                     if s.features[i].id == FeatureId::LmbHoldToggle {
                                         InputState.set_lmb_hold_active(false);
                                         send_mouse_hold(false);
+                                    }
+                                    if s.features[i].id == FeatureId::ToggleAllMacros {
+                                        GLOBAL_STATE.all_macros_disabled.store(false, Ordering::SeqCst);
                                     }
                                 }
                                 let _ = s.save_config();
