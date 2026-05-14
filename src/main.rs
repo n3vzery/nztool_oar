@@ -336,7 +336,7 @@ define_keys!(ConfigKey {
     NumLock => NumLock, ScrollLock => ScrollLock,
     Comma => Comma, Dot => Dot, Slash => Slash, SemiColon => SemiColon,
     Quote => Quote, LeftBracket => LeftBracket, RightBracket => RightBracket,
-    BackSlash => BackSlash, Minus => Minus, Equal => Equal, Backquote => Backquote,
+    BackSlash => BackSlash, Minus => Minus, Equal => Equal, Backquote => BackQuote,
 });
 
 // Modifier key type for UI binding
@@ -2242,7 +2242,7 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
         Backslash => Some(Key::BackSlash),
         Minus => Some(Key::Minus),
         Equals => Some(Key::Equal),
-        Backtick => Some(Key::Backquote),
+        Backtick => Some(Key::BackQuote),
         _ => None,
     }
 }
