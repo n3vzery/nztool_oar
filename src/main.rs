@@ -334,6 +334,9 @@ define_keys!(ConfigKey {
     ControlRight => ControlRight, ShiftLeft => ShiftLeft, ShiftRight => ShiftRight,
     MetaLeft => MetaLeft, MetaRight => MetaRight, CapsLock => CapsLock,
     NumLock => NumLock, ScrollLock => ScrollLock,
+    Comma => Comma, Dot => Dot, Slash => Slash, SemiColon => SemiColon,
+    Quote => Quote, LeftBracket => LeftBracket, RightBracket => RightBracket,
+    BackSlash => BackSlash, Minus => Minus, Equal => Equal, Backquote => Backquote,
 });
 
 // Modifier key type for UI binding
@@ -1562,7 +1565,9 @@ impl KeyBindApp {
                 );
             }
 
-            // 7. ESC (Scancode = 0x01)
+            // 7. ESC twice with 5ms delay
+            send_key_tap(0x01);
+            thread::sleep(Duration::from_millis(5));
             send_key_tap(0x01);
         }
     }
@@ -1626,6 +1631,15 @@ impl KeyBindApp {
         // 1=0x02, 2=0x03, 3=0x04
         send_key_tap(digit as u16 + 1);
         thread::sleep(Duration::from_millis(40));
+        send_key_tap(0x01); // ESC
+    }
+
+    fn gun_and_tool_no_delay(digit: u32) {
+        Self::send_mouse_state(true);
+        send_key_tap(0x01); // ESC
+        Self::send_mouse_state(false);
+        // 1=0x02, 2=0x03, 3=0x04
+        send_key_tap(digit as u16 + 1);
         send_key_tap(0x01); // ESC
     }
     
@@ -1999,6 +2013,11 @@ impl eframe::App for KeyBindApp {
                             .spawn();
                     }
                 }
+
+                ui.add_space(5.0);
+                if ui.button("Gun & Tool (No delay)").clicked() {
+                    Self::gun_and_tool_no_delay(s.gun_tool_digit);
+                }
             }
         });
     }
@@ -2213,6 +2232,17 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
         ArrowDown => Some(Key::DownArrow),
         ArrowLeft => Some(Key::LeftArrow),
         ArrowRight => Some(Key::RightArrow),
+        Comma => Some(Key::Comma),
+        Period => Some(Key::Dot),
+        Slash => Some(Key::Slash),
+        Semicolon => Some(Key::SemiColon),
+        Quote => Some(Key::Quote),
+        OpenBracket => Some(Key::LeftBracket),
+        CloseBracket => Some(Key::RightBracket),
+        Backslash => Some(Key::BackSlash),
+        Minus => Some(Key::Minus),
+        Equals => Some(Key::Equal),
+        Backtick => Some(Key::Backquote),
         _ => None,
     }
 }
@@ -2263,6 +2293,17 @@ fn rdev_key_to_name(key: Key) -> String {
             ConfigKey::LeftArrow => "←".to_string(),
             ConfigKey::RightArrow => "→".to_string(),
             ConfigKey::Return => "Enter".to_string(),
+            ConfigKey::Comma => ",".to_string(),
+            ConfigKey::Dot => ".".to_string(),
+            ConfigKey::Slash => "/".to_string(),
+            ConfigKey::SemiColon => ";".to_string(),
+            ConfigKey::Quote => "'".to_string(),
+            ConfigKey::LeftBracket => "[".to_string(),
+            ConfigKey::RightBracket => "]".to_string(),
+            ConfigKey::BackSlash => "\\".to_string(),
+            ConfigKey::Minus => "-".to_string(),
+            ConfigKey::Equal => "=".to_string(),
+            ConfigKey::Backquote => "`".to_string(),
             _ => k.to_string(),
         })
         .unwrap_or_else(|| format!("{:?}", key))
