@@ -749,21 +749,21 @@ impl AppState {
             features: vec![
                 Feature {
                     id: FeatureId::HackingPostMessage,
-                    name: "Hacking Device (A)".into(),
+                    name: "Hacking Device (Click mtd)".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::HackingPostMessage2,
-                    name: "Hacking Device (B)".into(),
+                    name: "Hacking Device (Jump mtd)".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::HackingEsc,
-                    name: "Hacking Device (Esc)".into(),
+                    name: "Hacking Device (Esc mtd)".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
@@ -1921,19 +1921,19 @@ impl eframe::App for KeyBindApp {
                         ui.add(egui::DragValue::new(&mut s.restart_y_offset).speed(1.0));
                     });
 
-                    // Y offset for Hacking Device A
+                    // Y offset for Hacking Device Click
                     ui.horizontal(|ui| {
-                        ui.label("Hacking A Y Offset:");
+                        ui.label("Hacking Click Y Offset:");
                         ui.add(egui::DragValue::new(&mut s.hacking_y_offset).speed(1.0));
                     });
 
-                    // Y offset for Hacking Device B
+                    // Y offset for Hacking Device Jump
                     ui.horizontal(|ui| {
-                        ui.label("Hacking B Y Offset:");
+                        ui.label("Hacking Jump Y Offset:");
                         ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0));
                     });
 
-                    // Y offset for Hacking Device Esc
+                    // Y offset for Hacking Device Esc mtd
                     ui.horizontal(|ui| {
                         ui.label("Hacking Esc Y Offset:");
                         ui.add(egui::DragValue::new(&mut s.hacking_esc_y_offset).speed(1.0));
