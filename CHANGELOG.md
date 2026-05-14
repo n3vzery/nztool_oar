@@ -11,7 +11,15 @@
 - AutoClicker and Bhop worker loops now respect the master switch.
 - Hotkey interception is bypassed when macros are globally disabled, ensuring normal keyboard input is preserved.
 
+#### Hacking Device (Esc)
+- Added a new hacking method that uses the ESC key instead of Space or post-blast clicking.
+- Configurable Y offset for the new method.
+
 ### 🎮 Improvements
+- **Renamed Hacking Features**:
+  - "Hacking Device (PostMessage)" is now **Hacking Device (A)**.
+  - "Hacking Device (PostMessage 2)" is now **Hacking Device (B)**.
+- **Optimized Gun & Tool Macro**: Reduced internal delays from 100ms to 40ms for significantly faster execution in multiplayer.
 - Updated versioning across the project.
 - Enhanced global state management with a new master switch flag.
 
