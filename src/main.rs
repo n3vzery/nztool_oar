@@ -56,6 +56,7 @@ struct GlobalInputState {
     rdev_shutdown: AtomicBool,
     lmb_hold_active: AtomicBool,
     click_debug_enabled: AtomicBool,
+    all_macros_disabled: AtomicBool,
 }
 
 impl GlobalInputState {
@@ -76,6 +77,7 @@ impl GlobalInputState {
             rdev_shutdown: AtomicBool::new(false),
             lmb_hold_active: AtomicBool::new(false),
             click_debug_enabled: AtomicBool::new(false),
+            all_macros_disabled: AtomicBool::new(false),
         }
     }
 }
@@ -94,6 +96,13 @@ enum WorkerMessage {
         offset_y: i32,
     },
     HackingPostMessage2 {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        offset_y: i32,
+    },
+    HackingEsc {
         x: i32,
         y: i32,
         w: i32,
@@ -215,6 +224,18 @@ impl InputState {
     fn get_keyboard_hook_thread_id(&self) -> u32 {
         GLOBAL_STATE.keyboard_hook_thread_id.load(Ordering::SeqCst)
     }
+
+    fn toggle_all_macros_disabled(&self) -> bool {
+        let current = GLOBAL_STATE.all_macros_disabled.load(Ordering::SeqCst);
+        GLOBAL_STATE
+            .all_macros_disabled
+            .store(!current, Ordering::SeqCst);
+        !current
+    }
+
+    fn are_all_macros_disabled(&self) -> bool {
+        GLOBAL_STATE.all_macros_disabled.load(Ordering::SeqCst)
+    }
 }
 
 // Helper function to safely lock mutex and handle poisoned state
@@ -313,6 +334,9 @@ define_keys!(ConfigKey {
     ControlRight => ControlRight, ShiftLeft => ShiftLeft, ShiftRight => ShiftRight,
     MetaLeft => MetaLeft, MetaRight => MetaRight, CapsLock => CapsLock,
     NumLock => NumLock, ScrollLock => ScrollLock,
+    Comma => Comma, Dot => Dot, Slash => Slash, SemiColon => SemiColon,
+    Quote => Quote, LeftBracket => LeftBracket, RightBracket => RightBracket,
+    BackSlash => BackSlash, Minus => Minus, Equal => Equal, Backquote => BackQuote,
 });
 
 // Modifier key type for UI binding
@@ -496,6 +520,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
 define_enum!(FeatureId {
     HackingPostMessage,
     HackingPostMessage2,
+    HackingEsc,
     TipsSkip,
     Restart,
     NoFallDamage,
@@ -508,6 +533,7 @@ define_enum!(FeatureId {
     LmbHoldToggle,
     GunAndTool,
     QuickExit,
+    ToggleAllMacros,
 });
 
 // Serializable structure for config file
@@ -545,6 +571,8 @@ struct SerializableConfig {
     hacking_y_offset: i32,
     #[serde(default = "default_hacking2_y")]
     hacking2_y_offset: i32,
+    #[serde(default = "default_hacking_esc_y")]
+    hacking_esc_y_offset: i32,
     #[serde(default = "default_gun_tool_digit")]
     gun_tool_digit: u32,
 }
@@ -559,6 +587,9 @@ fn default_hacking_y() -> i32 {
     -140
 }
 fn default_hacking2_y() -> i32 {
+    -140
+}
+fn default_hacking_esc_y() -> i32 {
     -140
 }
 fn default_auto_clicker_click_count() -> u32 {
@@ -600,6 +631,7 @@ struct AppState {
     restart_y_offset: i32,
     hacking_y_offset: i32,
     hacking2_y_offset: i32,
+    hacking_esc_y_offset: i32,
     gun_tool_digit: u32,
     dev_mode: bool,
 }
@@ -657,6 +689,7 @@ impl AppState {
             restart_y_offset: self.restart_y_offset,
             hacking_y_offset: self.hacking_y_offset,
             hacking2_y_offset: self.hacking2_y_offset,
+            hacking_esc_y_offset: self.hacking_esc_y_offset,
             gun_tool_digit: self.gun_tool_digit,
         };
 
@@ -706,6 +739,7 @@ impl AppState {
         self.restart_y_offset = config.restart_y_offset;
         self.hacking_y_offset = config.hacking_y_offset;
         self.hacking2_y_offset = config.hacking2_y_offset;
+        self.hacking_esc_y_offset = config.hacking_esc_y_offset;
         self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
 
         Ok(())
@@ -718,14 +752,21 @@ impl AppState {
             features: vec![
                 Feature {
                     id: FeatureId::HackingPostMessage,
-                    name: "Hacking Device (PostMessage)".into(),
+                    name: "Hacking Device (Click mtd)".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::HackingPostMessage2,
-                    name: "Hacking Device (PostMessage 2)".into(),
+                    name: "Hacking Device (Jump mtd)".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
+                    id: FeatureId::HackingEsc,
+                    name: "Hacking Device (Esc mtd)".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
@@ -807,6 +848,13 @@ impl AppState {
                     enabled: false,
                     selecting: false,
                 },
+                Feature {
+                    id: FeatureId::ToggleAllMacros,
+                    name: "Toggle All Macros".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -823,6 +871,7 @@ impl AppState {
             restart_y_offset: 486,
             hacking_y_offset: -140,
             hacking2_y_offset: -140,
+            hacking_esc_y_offset: -140,
             gun_tool_digit: 1,
             dev_mode: false,
         };
@@ -1034,8 +1083,9 @@ impl KeyBindApp {
         thread::spawn(move || {
             loop {
                 let bhop_enabled = input_bhop.is_bhop_active();
+                let all_disabled = input_bhop.are_all_macros_disabled();
 
-                if bhop_enabled && is_game_focused() {
+                if bhop_enabled && is_game_focused() && !all_disabled {
                     if input_bhop.is_space_down() {
                         send_key_tap(0x39); // Space key
                         thread::sleep(Duration::from_millis(BHOP_TAP_INTERVAL_MS));
@@ -1055,8 +1105,9 @@ impl KeyBindApp {
             let mut prev_shift = false;
             loop {
                 let shift_down = input_mod_poll.is_shift_down();
+                let all_disabled = input_mod_poll.are_all_macros_disabled();
 
-                if is_game_focused() {
+                if is_game_focused() && !all_disabled {
                     let Some(s) = safe_lock(&state_clone_mod) else {
                         error!("Failed to lock state in modifier polling thread");
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -1093,8 +1144,9 @@ impl KeyBindApp {
                     (enabled, s.auto_clicker_delay, s.auto_clicker_method, s.auto_clicker_click_count)
                 };
                 let active = input_ac.is_autoclicker_active();
+                let all_disabled = input_ac.are_all_macros_disabled();
 
-                if active && enabled && is_game_focused() {
+                if active && enabled && is_game_focused() && !all_disabled {
                     if input_ac.is_lmb_down() {
                         match click_method {
                             ClickMethod::SendInput => send_mouse_click(),
@@ -1127,7 +1179,8 @@ impl KeyBindApp {
 
                 let active = input_lmb_hold.is_lmb_hold_active();
                 let focused = is_game_focused();
-                let currently_active = active && enabled && focused;
+                let all_disabled = input_lmb_hold.are_all_macros_disabled();
+                let currently_active = active && enabled && focused && !all_disabled;
 
                 if currently_active {
                     send_mouse_hold(true);
@@ -1173,6 +1226,15 @@ impl KeyBindApp {
                         offset_y,
                     } => {
                         Self::hacking_method2(x, y, w, h, offset_y);
+                    }
+                    WorkerMessage::HackingEsc {
+                        x,
+                        y,
+                        w,
+                        h,
+                        offset_y,
+                    } => {
+                        Self::hacking_method_esc(x, y, w, h, offset_y);
                     }
                     WorkerMessage::TipsSkip { x, w, y } => {
                         Self::tips_skip(x, w, y);
@@ -1240,9 +1302,19 @@ impl KeyBindApp {
                             let restart_y = s.restart_y_offset;
                             let hack_y = s.hacking_y_offset;
                             let hack2_y = s.hacking2_y_offset;
+                            let hack_esc_y = s.hacking_esc_y_offset;
                             let gun_digit = s.gun_tool_digit;
 
                             // Handle toggle features immediately
+                            if feature_id == FeatureId::ToggleAllMacros {
+                                let _ = input_hotkey.toggle_all_macros_disabled();
+                                return None;
+                            }
+
+                            if input_hotkey.are_all_macros_disabled() {
+                                return Some(event);
+                            }
+
                             if feature_id == FeatureId::AutoClicker {
                                 let _ = input_hotkey.toggle_autoclicker();
                                 return None;
@@ -1278,6 +1350,15 @@ impl KeyBindApp {
                                         w,
                                         h,
                                         offset_y: hack2_y,
+                                    })
+                                }
+                                FeatureId::HackingEsc => {
+                                    Some(WorkerMessage::HackingEsc {
+                                        x,
+                                        y,
+                                        w,
+                                        h,
+                                        offset_y: hack_esc_y,
                                     })
                                 }
                                 FeatureId::TipsSkip => Some(WorkerMessage::TipsSkip {
@@ -1434,6 +1515,63 @@ impl KeyBindApp {
         }
     }
 
+    fn hacking_method_esc(x: i32, y: i32, w: i32, h: i32, offset_y: i32) {
+        unsafe {
+            // 1. Wait
+            thread::sleep(Duration::from_millis(HACKING_DELAY_MS));
+
+            // 2. Get game window
+            let hwnd = GetForegroundWindow();
+            if hwnd.0.is_null() {
+                return;
+            }
+
+            // 3. Screen center calculation
+            let center_x = x + w / 2;
+            let center_y = y + h / 2;
+            let target_x = center_x;
+            let target_y = center_y + offset_y;
+
+            // 4. Convert Screen to Client Coordinates
+            let mut pt = POINT {
+                x: target_x,
+                y: target_y,
+            };
+            if !ScreenToClient(hwnd, &mut pt).as_bool() {
+                warn!("ScreenToClient failed for hacking method esc");
+            }
+
+            // 5. Instant Move
+            set_cursor_pos_safe(target_x, target_y);
+
+            // 6. Direct Message Blast
+            let l_param = pack_lparam(pt.x, pt.y);
+
+            // CLICK_COUNT = 100, MK_LBUTTON = 0x0001
+            let mut failed_count = 0;
+            for _ in 0..100 {
+                if PostMessageA(hwnd, WM_LBUTTONDOWN, WPARAM(0x0001), LPARAM(l_param)).is_err() {
+                    failed_count += 1;
+                }
+                if PostMessageA(hwnd, WM_LBUTTONUP, WPARAM(0), LPARAM(l_param)).is_err() {
+                    failed_count += 1;
+                }
+                thread::yield_now();
+            }
+            if failed_count > 0 {
+                warn!(
+                    "PostMessageA failed {} times in hacking method esc",
+                    failed_count
+                );
+            }
+
+            // 7. ESC twice with 5ms delay
+            send_key_tap(0x01);
+            thread::sleep(Duration::from_millis(5));
+            send_key_tap(0x01);
+        }
+    }
+
     fn tips_skip(x: i32, w: i32, y_abs: i32) {
         move_mouse(x + w / 2, y_abs);
         send_mouse_click();
@@ -1485,14 +1623,23 @@ impl KeyBindApp {
 
     fn gun_and_tool(digit: u32) {
         Self::send_mouse_state(true);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(40));
         send_key_tap(0x01); // ESC
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(40));
         Self::send_mouse_state(false);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(40));
         // 1=0x02, 2=0x03, 3=0x04
         send_key_tap(digit as u16 + 1);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(40));
+        send_key_tap(0x01); // ESC
+    }
+
+    fn gun_and_tool_no_delay(digit: u32) {
+        Self::send_mouse_state(true);
+        send_key_tap(0x01); // ESC
+        Self::send_mouse_state(false);
+        // 1=0x02, 2=0x03, 3=0x04
+        send_key_tap(digit as u16 + 1);
         send_key_tap(0x01); // ESC
     }
     
@@ -1610,7 +1757,15 @@ impl eframe::App for KeyBindApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Nztool OAR (Rust edition)");
+            let title = if InputState.are_all_macros_disabled() {
+                "Nztool OAR v2.3.0 (Rust edition) - ALL MACROS DISABLED"
+            } else {
+                "Nztool OAR v2.3.0 (Rust edition)"
+            };
+            ui.heading(title);
+            if InputState.are_all_macros_disabled() {
+                ui.colored_label(egui::Color32::RED, "ALL MACROS DISABLED");
+            }
             ui.add_space(10.0);
 
             egui::Grid::new("features_grid")
@@ -1666,6 +1821,12 @@ impl eframe::App for KeyBindApp {
                         {
                             color = egui::Color32::BLUE;
                         }
+                        if s.features[i].id == FeatureId::ToggleAllMacros
+                            && InputState.are_all_macros_disabled()
+                            && s.features[i].enabled
+                        {
+                            color = egui::Color32::BLUE;
+                        }
 
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
@@ -1679,6 +1840,9 @@ impl eframe::App for KeyBindApp {
                                     if s.features[i].id == FeatureId::LmbHoldToggle {
                                         InputState.set_lmb_hold_active(false);
                                         send_mouse_hold(false);
+                                    }
+                                    if s.features[i].id == FeatureId::ToggleAllMacros {
+                                        GLOBAL_STATE.all_macros_disabled.store(false, Ordering::SeqCst);
                                     }
                                 }
                                 let _ = s.save_config();
@@ -1771,16 +1935,22 @@ impl eframe::App for KeyBindApp {
                         ui.add(egui::DragValue::new(&mut s.restart_y_offset).speed(1.0));
                     });
 
-                    // Y offset for Hacking Device
+                    // Y offset for Hacking Device Click
                     ui.horizontal(|ui| {
-                        ui.label("Hacking Y Offset:");
+                        ui.label("Hacking Click Y Offset:");
                         ui.add(egui::DragValue::new(&mut s.hacking_y_offset).speed(1.0));
                     });
 
-                    // Y offset for Hacking Device 2
+                    // Y offset for Hacking Device Jump
                     ui.horizontal(|ui| {
-                        ui.label("Hacking2 Y Offset:");
+                        ui.label("Hacking Jump Y Offset:");
                         ui.add(egui::DragValue::new(&mut s.hacking2_y_offset).speed(1.0));
+                    });
+
+                    // Y offset for Hacking Device Esc mtd
+                    ui.horizontal(|ui| {
+                        ui.label("Hacking Esc Y Offset:");
+                        ui.add(egui::DragValue::new(&mut s.hacking_esc_y_offset).speed(1.0));
                     });
 
                     ui.add_space(5.0);
@@ -1842,6 +2012,11 @@ impl eframe::App for KeyBindApp {
                             .arg(parent)
                             .spawn();
                     }
+                }
+
+                ui.add_space(5.0);
+                if ui.button("Gun & Tool (No delay)").clicked() {
+                    Self::gun_and_tool_no_delay(s.gun_tool_digit);
                 }
             }
         });
@@ -2057,6 +2232,17 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
         ArrowDown => Some(Key::DownArrow),
         ArrowLeft => Some(Key::LeftArrow),
         ArrowRight => Some(Key::RightArrow),
+        Comma => Some(Key::Comma),
+        Period => Some(Key::Dot),
+        Slash => Some(Key::Slash),
+        Semicolon => Some(Key::SemiColon),
+        Quote => Some(Key::Quote),
+        OpenBracket => Some(Key::LeftBracket),
+        CloseBracket => Some(Key::RightBracket),
+        Backslash => Some(Key::BackSlash),
+        Minus => Some(Key::Minus),
+        Equals => Some(Key::Equal),
+        Backtick => Some(Key::BackQuote),
         _ => None,
     }
 }
@@ -2107,6 +2293,17 @@ fn rdev_key_to_name(key: Key) -> String {
             ConfigKey::LeftArrow => "←".to_string(),
             ConfigKey::RightArrow => "→".to_string(),
             ConfigKey::Return => "Enter".to_string(),
+            ConfigKey::Comma => ",".to_string(),
+            ConfigKey::Dot => ".".to_string(),
+            ConfigKey::Slash => "/".to_string(),
+            ConfigKey::SemiColon => ";".to_string(),
+            ConfigKey::Quote => "'".to_string(),
+            ConfigKey::LeftBracket => "[".to_string(),
+            ConfigKey::RightBracket => "]".to_string(),
+            ConfigKey::BackSlash => "\\".to_string(),
+            ConfigKey::Minus => "-".to_string(),
+            ConfigKey::Equal => "=".to_string(),
+            ConfigKey::Backquote => "`".to_string(),
             _ => k.to_string(),
         })
         .unwrap_or_else(|| format!("{:?}", key))
