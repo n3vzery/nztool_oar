@@ -1,6 +1,7 @@
 ### Features:
-* **Hacking Device (PostMessage)**
-* **Hacking Device (PostMessage 2)**
+* **Hacking Device (Click mtd)**
+* **Hacking Device (Jump mtd)**
+* **Hacking Device (Esc mtd)**(NEW!!!)
 * **Tips Skip**
 * **Restart**
 * **No Fall Damage**
@@ -9,9 +10,10 @@
 * **Grab No Gun**
 * **Bhop**
 * **Hold Item Bug**
-* **LMB Hold Toggle(NEW!)**
-* **Gun & Tool (In multiplayer)(NEW!)**
-* **Quick Exit(NEW!)**
+* **LMB Hold Toggle**
+* **Gun & Tool (In multiplayer)**
+* **Quick Exit**
+* **Toggle All Macros**(NEW!!!)
 ---
 ### Support:
 * **If you like my work, you can [support the project here](https://app.lava.top/n3vzery?tabId=donate)**
