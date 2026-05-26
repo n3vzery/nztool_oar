@@ -7,11 +7,11 @@
 * **No Fall Damage**
 * **Shift Toggle**
 * **Auto Clicker**
+* **Keep Item Clicker**
 * **Grab No Gun**
 * **Bhop**
 * **Hold Item Bug**
-* **LMB Hold Toggle**
-* **Gun & Tool (In multiplayer)**
+* **Gangsta Grip (In multiplayer)**
 * **Quick Exit**
 * **Toggle All Macros**(NEW!!!)
 ---
