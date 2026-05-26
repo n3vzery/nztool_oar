@@ -409,7 +409,8 @@ fn is_game_focused() -> bool {
 const HACKING_DELAY_MS: u64 = 50;
 const MOUSE_CLICK_PRE_DELAY_MS: u64 = 10;
 const HOLD_ITEM_TAP_DELAY_MS: u64 = 7;
-const RESTART_KEY_DELAY_MS: u64 = 100;
+const RESTART_KEY_DELAY_MS: u64 = 120;
+const RESTART_SETTLE_DELAY_MS: u64 = 40;
 const NO_FALL_DAMAGE_DELAY_MS: u64 = 30;
 const QUICK_EXIT_DELAY_MS: u64 = 60;
 const BHOP_TAP_INTERVAL_MS: u64 = 15;
@@ -530,7 +531,7 @@ define_enum!(FeatureId {
     GrabNoGun,
     Bhop,
     HoldItemBug,
-    LmbHoldToggle,
+    KeepItemClicker,
     GunAndTool,
     QuickExit,
     ToggleAllMacros,
@@ -807,8 +808,15 @@ impl AppState {
                     selecting: false,
                 },
                 Feature {
+                    id: FeatureId::KeepItemClicker,
+                    name: "Keep Item Clicker".into(),
+                    rdev_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
                     id: FeatureId::GrabNoGun,
-                    name: "Grab No Gun".into(),
+                    name: "Fast Loadout".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
@@ -828,15 +836,8 @@ impl AppState {
                     selecting: false,
                 },
                 Feature {
-                    id: FeatureId::LmbHoldToggle,
-                    name: "LMB Hold Toggle".into(),
-                    rdev_key: None,
-                    enabled: false,
-                    selecting: false,
-                },
-                Feature {
                     id: FeatureId::GunAndTool,
-                    name: "Gun & Tool (In multiplayer)".into(),
+                    name: "Gangsta Grip (In multiplayer)".into(),
                     rdev_key: None,
                     enabled: false,
                     selecting: false,
@@ -1174,7 +1175,7 @@ impl KeyBindApp {
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                         continue;
                     };
-                    s.features.iter().any(|f| f.id == FeatureId::LmbHoldToggle && f.enabled)
+                    s.features.iter().any(|f| f.id == FeatureId::KeepItemClicker && f.enabled)
                 };
 
                 let active = input_lmb_hold.is_lmb_hold_active();
@@ -1325,7 +1326,7 @@ impl KeyBindApp {
                                 return None;
                             }
 
-                            if feature_id == FeatureId::LmbHoldToggle {
+                            if feature_id == FeatureId::KeepItemClicker {
                                 let _ = input_hotkey.toggle_lmb_hold();
                                 return None;
                             }
@@ -1578,10 +1579,17 @@ impl KeyBindApp {
     }
 
     fn restart(x: i32, w: i32, y_abs: i32) {
+        unsafe {
+            let _ = BlockInput(TRUE);
+        }
         send_key_tap(0x01);
         thread::sleep(Duration::from_millis(RESTART_KEY_DELAY_MS));
         move_mouse(x + w / 2, y_abs);
+        thread::sleep(Duration::from_millis(RESTART_SETTLE_DELAY_MS));
         send_mouse_click();
+        unsafe {
+            let _ = BlockInput(FALSE);
+        }
     }
 
     fn no_fall_damage() {
@@ -1623,14 +1631,14 @@ impl KeyBindApp {
 
     fn gun_and_tool(digit: u32) {
         Self::send_mouse_state(true);
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(1));
         send_key_tap(0x01); // ESC
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(1));
         Self::send_mouse_state(false);
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(1));
         // 1=0x02, 2=0x03, 3=0x04
         send_key_tap(digit as u16 + 1);
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(1));
         send_key_tap(0x01); // ESC
     }
 
@@ -1758,9 +1766,9 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let title = if InputState.are_all_macros_disabled() {
-                "Nztool OAR v2.3.0 (Rust edition) - ALL MACROS DISABLED"
+                "Nztool OAR v2.3.1 (Rust edition) - ALL MACROS DISABLED"
             } else {
-                "Nztool OAR v2.3.0 (Rust edition)"
+                "Nztool OAR v2.3.1 (Rust edition)"
             };
             ui.heading(title);
             if InputState.are_all_macros_disabled() {
@@ -1794,7 +1802,7 @@ impl eframe::App for KeyBindApp {
                             if s.features[i].id == FeatureId::ShiftToggle {
                                 s.release_shift();
                             }
-                            if s.features[i].id == FeatureId::LmbHoldToggle {
+                            if s.features[i].id == FeatureId::KeepItemClicker {
                                 InputState.set_lmb_hold_active(false);
                                 send_mouse_hold(false);
                             }
@@ -1815,7 +1823,7 @@ impl eframe::App for KeyBindApp {
                         {
                             color = egui::Color32::BLUE;
                         }
-                        if s.features[i].id == FeatureId::LmbHoldToggle
+                        if s.features[i].id == FeatureId::KeepItemClicker
                             && InputState.is_lmb_hold_active()
                             && s.features[i].enabled
                         {
@@ -1837,7 +1845,7 @@ impl eframe::App for KeyBindApp {
                                     if s.features[i].id == FeatureId::ShiftToggle {
                                         s.release_shift();
                                     }
-                                    if s.features[i].id == FeatureId::LmbHoldToggle {
+                                    if s.features[i].id == FeatureId::KeepItemClicker {
                                         InputState.set_lmb_hold_active(false);
                                         send_mouse_hold(false);
                                     }
@@ -1955,9 +1963,9 @@ impl eframe::App for KeyBindApp {
 
                     ui.add_space(5.0);
 
-                    // Gun & Tool Digit
+                    // Gangsta Grip Digit
                     ui.horizontal(|ui| {
-                        ui.label("Gun & Tool Digit:");
+                        ui.label("Gangsta Grip Digit:");
                         let mut val = s.gun_tool_digit;
                         if ui.add(egui::DragValue::new(&mut val).range(1..=6969)).changed() {
                             if val == 6969 {
@@ -2015,7 +2023,7 @@ impl eframe::App for KeyBindApp {
                 }
 
                 ui.add_space(5.0);
-                if ui.button("Gun & Tool (No delay)").clicked() {
+                if ui.button("Gangsta Grip (No delay)").clicked() {
                     Self::gun_and_tool_no_delay(s.gun_tool_digit);
                 }
             }
