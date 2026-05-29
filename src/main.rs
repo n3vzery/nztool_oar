@@ -382,17 +382,17 @@ fn is_game_focused() -> bool {
 }
 
 // --- CONSTANTS ---
-const HACKING_DELAY_MS: u64 = 50;
-const MOUSE_CLICK_PRE_DELAY_MS: u64 = 10;
-const HOLD_ITEM_TAP_DELAY_MS: u64 = 7;
-const RESTART_KEY_DELAY_MS: u64 = 120;
-const RESTART_SETTLE_DELAY_MS: u64 = 40;
-const NO_FALL_DAMAGE_DELAY_MS: u64 = 30;
-const QUICK_EXIT_DELAY_MS: u64 = 60;
-const BHOP_TAP_INTERVAL_MS: u64 = 15;
+const HACKING_DELAY_MS: u64 = 12;
+const MOUSE_CLICK_PRE_DELAY_MS: u64 = 2;
+const HOLD_ITEM_TAP_DELAY_MS: u64 = 1;
+const RESTART_KEY_DELAY_MS: u64 = 30;
+const RESTART_SETTLE_DELAY_MS: u64 = 10;
+const NO_FALL_DAMAGE_DELAY_MS: u64 = 7;
+const QUICK_EXIT_DELAY_MS: u64 = 15;
+const BHOP_TAP_INTERVAL_MS: u64 = 3;
 const POLL_INTERVAL_MS: u64 = 5;
-const AUTO_CLICKER_MIN_DELAY_MS: u32 = 1;
-const AUTO_CLICKER_MAX_DELAY_MS: u32 = 50;
+const AUTO_CLICKER_MIN_DELAY_MS: u32 = 0;
+const AUTO_CLICKER_MAX_DELAY_MS: u32 = 500;
 
 // Helper to pack coordinates into LPARAM safely for PostMessage
 // Handles negative coordinates by casting through i16 (16-bit signed)
@@ -567,6 +567,22 @@ impl std::fmt::Display for ClickMethod {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+enum AutoClickerMode {
+    #[default]
+    Mouse,
+    Keyboard,
+}
+
+impl std::fmt::Display for AutoClickerMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AutoClickerMode::Mouse => write!(f, "Mouse"),
+            AutoClickerMode::Keyboard => write!(f, "Keyboard"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableConfig {
     monitor_id: String,
@@ -575,6 +591,10 @@ struct SerializableConfig {
     auto_clicker_method: ClickMethod,
     #[serde(default = "default_auto_clicker_click_count")]
     auto_clicker_click_count: u32,
+    #[serde(default = "default_auto_clicker_mode")]
+    auto_clicker_mode: AutoClickerMode,
+    #[serde(default = "default_auto_clicker_key")]
+    auto_clicker_key: ConfigKey,
     position_x: i32,
     position_y: i32,
     #[serde(default = "default_tips_skip_y")]
@@ -589,6 +609,7 @@ struct SerializableConfig {
     hacking_esc_y_offset: i32,
     #[serde(default = "default_gun_tool_digit")]
     gun_tool_digit: u32,
+
 }
 
 fn default_tips_skip_y() -> i32 {
@@ -611,6 +632,12 @@ fn default_auto_clicker_click_count() -> u32 {
 }
 fn default_gun_tool_digit() -> u32 {
     1
+}
+fn default_auto_clicker_mode() -> AutoClickerMode {
+    AutoClickerMode::Mouse
+}
+fn default_auto_clicker_key() -> ConfigKey {
+    ConfigKey::KeyE
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -639,6 +666,8 @@ struct AppState {
     auto_clicker_delay: u32,
     auto_clicker_method: ClickMethod,
     auto_clicker_click_count: u32,
+    auto_clicker_mode: AutoClickerMode,
+    auto_clicker_key: ConfigKey,
     position_x: i32,
     position_y: i32,
     tips_skip_y_offset: i32,
@@ -648,6 +677,9 @@ struct AppState {
     hacking_esc_y_offset: i32,
     gun_tool_digit: u32,
     dev_mode: bool,
+    presets: Vec<String>,
+    selected_preset: String,
+    preset_name_input: String,
 }
 
 // Get the path to the config directory and file
@@ -656,6 +688,11 @@ fn get_config_path() -> std::path::PathBuf {
     let config_dir = std::path::PathBuf::from(appdata).join("nzconfig");
     
     config_dir.join("config.json")
+}
+
+fn get_presets_dir() -> std::path::PathBuf {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(appdata).join("nzconfig").join("presets")
 }
 
 // Convert rdev::Key to ConfigKey then to string
@@ -697,6 +734,8 @@ impl AppState {
             auto_clicker_delay: self.auto_clicker_delay,
             auto_clicker_method: self.auto_clicker_method,
             auto_clicker_click_count: self.auto_clicker_click_count,
+            auto_clicker_mode: self.auto_clicker_mode,
+            auto_clicker_key: self.auto_clicker_key,
             position_x: self.position_x,
             position_y: self.position_y,
             tips_skip_y_offset: self.tips_skip_y_offset,
@@ -747,6 +786,105 @@ impl AppState {
         self.auto_clicker_delay = config.auto_clicker_delay;
         self.auto_clicker_method = config.auto_clicker_method;
         self.auto_clicker_click_count = config.auto_clicker_click_count;
+        self.auto_clicker_mode = config.auto_clicker_mode;
+        self.auto_clicker_key = config.auto_clicker_key;
+        self.position_x = config.position_x;
+        self.position_y = config.position_y;
+        self.tips_skip_y_offset = config.tips_skip_y_offset;
+        self.restart_y_offset = config.restart_y_offset;
+        self.hacking_y_offset = config.hacking_y_offset;
+        self.hacking2_y_offset = config.hacking2_y_offset;
+        self.hacking_esc_y_offset = config.hacking_esc_y_offset;
+        self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
+ 
+        Ok(())
+    }
+
+    fn refresh_presets(&mut self) {
+        let presets_dir = get_presets_dir();
+        let mut list = Vec::new();
+        
+        let _ = std::fs::create_dir_all(&presets_dir);
+
+        if let Ok(entries) = std::fs::read_dir(&presets_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            list.push(stem.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        list.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        self.presets = list;
+    }
+
+    fn save_preset(&self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let presets_dir = get_presets_dir();
+        std::fs::create_dir_all(&presets_dir)?;
+        let path = presets_dir.join(format!("{}.json", name));
+
+        let features: Vec<SerializableFeature> = self
+            .features
+            .iter()
+            .map(|f| SerializableFeature {
+                id: f.id,
+                rdev_key: f.rdev_key.as_ref().map(|k| key_to_string(*k)),
+                enabled: f.enabled,
+            })
+            .collect();
+
+        let config = SerializableConfig {
+            monitor_id: self.monitor_id.clone(),
+            features,
+            auto_clicker_delay: self.auto_clicker_delay,
+            auto_clicker_method: self.auto_clicker_method,
+            auto_clicker_click_count: self.auto_clicker_click_count,
+            auto_clicker_mode: self.auto_clicker_mode,
+            auto_clicker_key: self.auto_clicker_key,
+            position_x: self.position_x,
+            position_y: self.position_y,
+            tips_skip_y_offset: self.tips_skip_y_offset,
+            restart_y_offset: self.restart_y_offset,
+            hacking_y_offset: self.hacking_y_offset,
+            hacking2_y_offset: self.hacking2_y_offset,
+            hacking_esc_y_offset: self.hacking_esc_y_offset,
+            gun_tool_digit: self.gun_tool_digit,
+        };
+
+        let json = serde_json::to_string_pretty(&config)?;
+        std::fs::write(&path, json)?;
+
+        Ok(())
+    }
+
+    fn load_preset(&mut self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let presets_dir = get_presets_dir();
+        let path = presets_dir.join(format!("{}.json", name));
+        if !path.exists() {
+            return Err("Preset file does not exist".into());
+        }
+
+        let json = std::fs::read_to_string(&path)?;
+        let config: SerializableConfig = serde_json::from_str(&json)?;
+
+        self.monitor_id = config.monitor_id;
+
+        for sf in config.features {
+            if let Some(feature) = self.features.iter_mut().find(|f| f.id == sf.id) {
+                feature.rdev_key = sf.rdev_key.as_ref().and_then(|k| string_to_key(k));
+                feature.enabled = sf.enabled;
+            }
+        }
+
+        self.auto_clicker_delay = config.auto_clicker_delay;
+        self.auto_clicker_method = config.auto_clicker_method;
+        self.auto_clicker_click_count = config.auto_clicker_click_count;
+        self.auto_clicker_mode = config.auto_clicker_mode;
+        self.auto_clicker_key = config.auto_clicker_key;
         self.position_x = config.position_x;
         self.position_y = config.position_y;
         self.tips_skip_y_offset = config.tips_skip_y_offset;
@@ -756,6 +894,17 @@ impl AppState {
         self.hacking_esc_y_offset = config.hacking_esc_y_offset;
         self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
 
+        let _ = self.save_config();
+
+        Ok(())
+    }
+
+    fn delete_preset(&mut self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let presets_dir = get_presets_dir();
+        let path = presets_dir.join(format!("{}.json", name));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
         Ok(())
     }
 }
@@ -879,6 +1028,8 @@ impl AppState {
             auto_clicker_delay: 6,
             auto_clicker_method: ClickMethod::default(),
             auto_clicker_click_count: 1,
+            auto_clicker_mode: AutoClickerMode::default(),
+            auto_clicker_key: ConfigKey::KeyE,
             position_x: 0,
             position_y: 0,
             tips_skip_y_offset: 830,
@@ -888,8 +1039,12 @@ impl AppState {
             hacking_esc_y_offset: -140,
             gun_tool_digit: 1,
             dev_mode: false,
+            presets: Vec::new(),
+            selected_preset: String::new(),
+            preset_name_input: String::new(),
         };
         state.update_screen_position();
+        state.refresh_presets();
 
         // Load config from file if it exists
         if let Err(e) = Self::load_config(&mut state) {
@@ -952,6 +1107,8 @@ impl AppState {
         self.auto_clicker_delay = 6;
         self.auto_clicker_method = ClickMethod::default();
         self.auto_clicker_click_count = 1;
+        self.auto_clicker_mode = AutoClickerMode::default();
+        self.auto_clicker_key = ConfigKey::KeyE;
         self.position_x = 0;
         self.position_y = 0;
         self.tips_skip_y_offset = 830;
@@ -960,8 +1117,11 @@ impl AppState {
         self.hacking2_y_offset = -140;
         self.gun_tool_digit = 1;
         self.dev_mode = false;
+        self.selected_preset = String::new();
+        self.preset_name_input = String::new();
         self.monitor_id = "1".to_string();
         self.update_screen_position();
+        self.refresh_presets();
     }
 }
 
@@ -1145,7 +1305,7 @@ impl KeyBindApp {
         let state_clone_ac = state.clone();
         thread::spawn(move || {
             loop {
-                let (enabled, delay_ms, click_method, click_count) = {
+                let (enabled, delay_ms, click_method, click_count, mode, key) = {
                     let Some(s) = safe_lock(&state_clone_ac) else {
                         error!("Failed to lock state in autoclicker thread");
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
@@ -1155,18 +1315,39 @@ impl KeyBindApp {
                         .features
                         .iter()
                         .any(|f| f.id == FeatureId::AutoClicker && f.enabled);
-                    (enabled, s.auto_clicker_delay, s.auto_clicker_method, s.auto_clicker_click_count)
+                    (
+                        enabled,
+                        s.auto_clicker_delay,
+                        s.auto_clicker_method,
+                        s.auto_clicker_click_count,
+                        s.auto_clicker_mode,
+                        s.auto_clicker_key,
+                    )
                 };
                 let active = input_ac.is_autoclicker_active();
                 let all_disabled = input_ac.are_all_macros_disabled();
 
                 if active && enabled && is_game_focused() && !all_disabled {
                     if input_ac.is_lmb_down() {
-                        match click_method {
-                            ClickMethod::SendInput => send_mouse_click(),
-                            ClickMethod::PostMessage => send_mouse_click_postmessage(click_count),
+                        match mode {
+                            AutoClickerMode::Mouse => {
+                                match click_method {
+                                    ClickMethod::SendInput => send_mouse_click(),
+                                    ClickMethod::PostMessage => send_mouse_click_postmessage(click_count),
+                                }
+                            }
+                            AutoClickerMode::Keyboard => {
+                                let rdev_k = key.to_rdev();
+                                if let Some(scan) = rdev_key_to_scancode(rdev_k) {
+                                    send_key_tap(scan);
+                                }
+                            }
                         }
-                        thread::sleep(Duration::from_millis(delay_ms as u64));
+                        if delay_ms > 0 {
+                            thread::sleep(Duration::from_millis(delay_ms as u64));
+                        } else {
+                            thread::yield_now();
+                        }
                     } else {
                         thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
                     }
@@ -1265,6 +1446,7 @@ impl KeyBindApp {
                     WorkerMessage::GangstaGrip { digit } => {
                         Self::gangsta_grip(digit);
                     }
+
                     WorkerMessage::QuickExit { x, y } => {
                         Self::quick_exit(x, y);
                     }
@@ -1579,9 +1761,9 @@ impl KeyBindApp {
                 );
             }
 
-            // 7. ESC twice with 5ms delay
+            // 7. ESC twice with 1ms delay
             send_key_tap(0x01);
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(1));
             send_key_tap(0x01);
         }
     }
@@ -1658,6 +1840,7 @@ impl KeyBindApp {
         send_key_tap(digit as u16 + 1);
         send_key_tap(0x01); // ESC
     }
+
     
     fn quick_exit(x_offset: i32, y_offset: i32) {
         send_key_tap(0x01); // ESC
@@ -1778,11 +1961,7 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-            let title = if InputState.are_all_macros_disabled() {
-                "Nztool OAR v2.3.2 - ALL MACROS DISABLED"
-            } else {
-                "Nztool OAR v2.3.2"
-            };
+            let title = "Nztool OAR v2.3.3";
             ui.vertical_centered(|ui| {
                 ui.heading(title);
                 if InputState.are_all_macros_disabled() {
@@ -1898,6 +2077,49 @@ impl eframe::App for KeyBindApp {
 
                 ui.add_space(5.0);
 
+                // Auto Clicker Mode selection
+                ui.horizontal(|ui| {
+                    ui.label("Auto Clicker Mode:");
+                    let mouse_selected = s.auto_clicker_mode == AutoClickerMode::Mouse;
+                    let kb_selected = s.auto_clicker_mode == AutoClickerMode::Keyboard;
+                    if ui.selectable_label(mouse_selected, "Mouse").clicked() {
+                        s.auto_clicker_mode = AutoClickerMode::Mouse;
+                        let _ = s.save_config();
+                    }
+                    if ui.selectable_label(kb_selected, "Keyboard").clicked() {
+                        s.auto_clicker_mode = AutoClickerMode::Keyboard;
+                        let _ = s.save_config();
+                    }
+                });
+
+                if s.auto_clicker_mode == AutoClickerMode::Keyboard {
+                    ui.horizontal(|ui| {
+                        ui.label("Key to Spam:");
+                        let prev_key = s.auto_clicker_key;
+                        egui::ComboBox::from_id_salt("ac_key_select")
+                            .selected_text(format!("{:?}", s.auto_clicker_key))
+                            .show_ui(ui, |ui| {
+                                let keys = [
+                                    ConfigKey::KeyE,
+                                    ConfigKey::KeyF,
+                                    ConfigKey::Space,
+                                    ConfigKey::KeyQ,
+                                    ConfigKey::KeyR,
+                                    ConfigKey::KeyC,
+                                    ConfigKey::KeyV,
+                                    ConfigKey::KeyG,
+                                    ConfigKey::Tab,
+                                ];
+                                for k in keys {
+                                    ui.selectable_value(&mut s.auto_clicker_key, k, format!("{:?}", k));
+                                }
+                            });
+                        if s.auto_clicker_key != prev_key {
+                            let _ = s.save_config();
+                        }
+                    });
+                }
+
                 // Auto Clicker Delay slider
                 ui.horizontal(|ui| {
                     ui.label("Auto Clicker Delay:");
@@ -1910,30 +2132,32 @@ impl eframe::App for KeyBindApp {
                     );
                 });
 
-                // Auto Clicker Method selection
-                ui.horizontal(|ui| {
-                    ui.label("Click Method:");
-                    let send_input_selected = s.auto_clicker_method == ClickMethod::SendInput;
-                    let post_message_selected = s.auto_clicker_method == ClickMethod::PostMessage;
-                    if ui.selectable_label(send_input_selected, "SendInput").clicked() {
-                        s.auto_clicker_method = ClickMethod::SendInput;
-                        let _ = s.save_config();
-                    }
-                    if ui.selectable_label(post_message_selected, "PostMessage").clicked() {
-                        s.auto_clicker_method = ClickMethod::PostMessage;
-                        let _ = s.save_config();
-                    }
-                });
-
-                // PostMessage click count
-                if s.auto_clicker_method == ClickMethod::PostMessage {
+                if s.auto_clicker_mode == AutoClickerMode::Mouse {
+                    // Auto Clicker Method selection
                     ui.horizontal(|ui| {
-                        ui.label("Clicks per trigger:");
-                        ui.add(egui::DragValue::new(&mut s.auto_clicker_click_count).speed(1.0).range(1..=20));
-                        if ui.button("Apply").clicked() {
+                        ui.label("Click Method:");
+                        let send_input_selected = s.auto_clicker_method == ClickMethod::SendInput;
+                        let post_message_selected = s.auto_clicker_method == ClickMethod::PostMessage;
+                        if ui.selectable_label(send_input_selected, "SendInput").clicked() {
+                            s.auto_clicker_method = ClickMethod::SendInput;
+                            let _ = s.save_config();
+                        }
+                        if ui.selectable_label(post_message_selected, "PostMessage").clicked() {
+                            s.auto_clicker_method = ClickMethod::PostMessage;
                             let _ = s.save_config();
                         }
                     });
+
+                    // PostMessage click count
+                    if s.auto_clicker_method == ClickMethod::PostMessage {
+                        ui.horizontal(|ui| {
+                            ui.label("Clicks per trigger:");
+                            ui.add(egui::DragValue::new(&mut s.auto_clicker_click_count).speed(1.0).range(1..=20));
+                            if ui.button("Apply").clicked() {
+                                let _ = s.save_config();
+                            }
+                        });
+                    }
                 }
 
                 ui.add_space(5.0);
@@ -1980,7 +2204,8 @@ impl eframe::App for KeyBindApp {
 
                 ui.add_space(5.0);
 
-                // Gangsta Grip Digit
+
+                // Gangsta Grip Digit & Save/Load/Default buttons
                 ui.horizontal(|ui| {
                     ui.label("Gangsta Grip Digit:");
                     let mut val = s.gun_tool_digit;
@@ -1993,12 +2218,9 @@ impl eframe::App for KeyBindApp {
                         }
                         let _ = s.save_config();
                     }
-                });
 
-                ui.add_space(10.0);
+                    ui.add_space(20.0); // Visual separator
 
-                // Save/Load/Default buttons for Options
-                ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
                         let _ = s.save_config();
                     }
@@ -2009,6 +2231,64 @@ impl eframe::App for KeyBindApp {
                         s.reset_to_defaults();
                     }
                 });
+
+
+                ui.add_space(5.0);
+                ui.separator();
+                ui.label("Presets");
+
+                // Dropdown of existing presets
+                ui.horizontal(|ui| {
+                    ui.label("Select Preset:");
+                    let mut selected = s.selected_preset.clone();
+                    let prev_selected = selected.clone();
+
+                    egui::ComboBox::from_id_salt("preset_select")
+                        .selected_text(if selected.is_empty() { "None".to_string() } else { selected.clone() })
+                        .show_ui(ui, |ui| {
+                            for preset in &s.presets {
+                                ui.selectable_value(&mut selected, preset.clone(), preset.clone());
+                            }
+                        });
+
+                    if selected != prev_selected {
+                        s.selected_preset = selected.clone();
+                        // Load the preset automatically when selected
+                        if let Err(e) = s.load_preset(&selected) {
+                            error!("Failed to load preset: {}", e);
+                        }
+                    }
+
+                    // Delete button (only if a preset is selected)
+                    if !s.selected_preset.is_empty() {
+                        if ui.button("Delete").clicked() {
+                            let to_delete = s.selected_preset.clone();
+                            let _ = s.delete_preset(&to_delete);
+                            s.selected_preset = String::new();
+                            s.refresh_presets();
+                        }
+                    }
+                });
+
+                // Create new preset input and button
+                ui.horizontal(|ui| {
+                    ui.label("New Preset Name:");
+                    ui.add(egui::TextEdit::singleline(&mut s.preset_name_input).desired_width(120.0));
+                    if ui.button("Create").clicked() {
+                        let name = s.preset_name_input.trim().to_string();
+                        if !name.is_empty() {
+                            if let Err(e) = s.save_preset(&name) {
+                                error!("Failed to save preset: {}", e);
+                            } else {
+                                s.selected_preset = name;
+                                s.preset_name_input = String::new();
+                                s.refresh_presets();
+                            }
+                        }
+                    }
+                });
+
+
 
                 ui.add_space(10.0);
                 ui.separator();
@@ -2026,6 +2306,10 @@ impl eframe::App for KeyBindApp {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.heading("Developer Tools");
+
+                // Dev Step Delays sliders
+
+
                 let mut debug_enabled = GLOBAL_STATE.click_debug_enabled.load(Ordering::SeqCst);
                 if ui.checkbox(&mut debug_enabled, "Enable Click Debugging").changed() {
                     GLOBAL_STATE
@@ -2163,6 +2447,54 @@ fn send_mouse_hold(down: bool) {
         if SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 0 {
             error!("SendInput failed in send_mouse_hold (down: {})", down);
         }
+    }
+}
+
+fn rdev_key_to_scancode(key: Key) -> Option<u16> {
+    match key {
+        Key::Escape => Some(0x01),
+        Key::Num1 => Some(0x02),
+        Key::Num2 => Some(0x03),
+        Key::Num3 => Some(0x04),
+        Key::Num4 => Some(0x05),
+        Key::Num5 => Some(0x06),
+        Key::Num6 => Some(0x07),
+        Key::Num7 => Some(0x08),
+        Key::Num8 => Some(0x09),
+        Key::Num9 => Some(0x0A),
+        Key::Num0 => Some(0x0B),
+        Key::Minus => Some(0x0C),
+        Key::Equal => Some(0x0D),
+        Key::Backspace => Some(0x0E),
+        Key::Tab => Some(0x0F),
+        Key::KeyQ => Some(0x10),
+        Key::KeyW => Some(0x11),
+        Key::KeyE => Some(0x12),
+        Key::KeyR => Some(0x13),
+        Key::KeyT => Some(0x14),
+        Key::KeyY => Some(0x15),
+        Key::KeyU => Some(0x16),
+        Key::KeyI => Some(0x17),
+        Key::KeyO => Some(0x18),
+        Key::KeyP => Some(0x19),
+        Key::KeyA => Some(0x1E),
+        Key::KeyS => Some(0x1F),
+        Key::KeyD => Some(0x20),
+        Key::KeyF => Some(0x21),
+        Key::KeyG => Some(0x22),
+        Key::KeyH => Some(0x23),
+        Key::KeyJ => Some(0x24),
+        Key::KeyK => Some(0x25),
+        Key::KeyL => Some(0x26),
+        Key::KeyZ => Some(0x2C),
+        Key::KeyX => Some(0x2D),
+        Key::KeyC => Some(0x2E),
+        Key::KeyV => Some(0x2F),
+        Key::KeyB => Some(0x30),
+        Key::KeyN => Some(0x31),
+        Key::KeyM => Some(0x32),
+        Key::Space => Some(0x39),
+        _ => None,
     }
 }
 
