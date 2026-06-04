@@ -6,7 +6,7 @@ use rdev::{grab, Event, EventType, Key};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::*;
@@ -83,6 +83,11 @@ impl GlobalInputState {
 }
 
 static GLOBAL_STATE: GlobalInputState = GlobalInputState::new();
+
+// globals for mouse hook to dispatch xbutton events
+static MOUSE_HOOK_TX: OnceLock<mpsc::Sender<WorkerMessage>> = OnceLock::new();
+static MOUSE_HOOK_STATE: OnceLock<Arc<Mutex<AppState>>> = OnceLock::new();
+static MOUSE_HOOK_INPUT: OnceLock<InputState> = OnceLock::new();
 
 // Worker thread messages for feature execution
 enum WorkerMessage {
@@ -315,15 +320,6 @@ define_keys!(ConfigKey {
     BackSlash => BackSlash, Minus => Minus, Equal => Equal, Backquote => BackQuote,
 });
 
-// Modifier key type for UI binding
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum KeyModifier {
-    Ctrl,
-    Shift,
-    Alt,
-    CapsLock,
-}
-
 // Helper to check if the game window is currently focused
 fn is_game_focused() -> bool {
     // Cache with 100ms TTL to reduce WinAPI calls
@@ -420,11 +416,114 @@ unsafe extern "system" fn low_level_mouse_proc(
                     }
                 } else if w_param.0 as u32 == WM_LBUTTONUP {
                     GLOBAL_STATE.lmb_down.store(false, Ordering::SeqCst);
+                } else if w_param.0 as u32 == 0x020B || w_param.0 as u32 == 0x020C {
+                    // WM_XBUTTONDOWN (0x020B) / WM_XBUTTONUP (0x020C) - side mouse buttons
+                    let xbutton = (ms_ll.mouseData >> 16) as u16;
+                    let bind_key = if xbutton == 1 {
+                        BindKey::Mouse4
+                    } else {
+                        BindKey::Mouse5
+                    };
+
+                    // check if this button is bound to any enabled feature
+                    let is_bound = if is_game_focused() {
+                        if let Some(state) = MOUSE_HOOK_STATE.get() {
+                            if let Some(s) = safe_lock(state) {
+                                s.features.iter().any(|f| f.enabled && f.bind_key == Some(bind_key))
+                            } else { false }
+                        } else { false }
+                    } else { false };
+
+                    if is_bound {
+                        // only dispatch macro on button down, not up
+                        if w_param.0 as u32 == 0x020B {
+                            thread::spawn(move || {
+                                handle_mouse_bind(bind_key);
+                            });
+                        }
+                        // block the event from reaching the game
+                        return LRESULT(1);
+                    }
                 }
             }
         }
     }
     unsafe { CallNextHookEx(HHOOK::default(), n_code, w_param, l_param) }
+}
+
+// dispatches a mouse button bind through the worker channel
+fn handle_mouse_bind(bind_key: BindKey) {
+    if !is_game_focused() {
+        return;
+    }
+
+    let (Some(tx), Some(state), Some(input)) = (
+        MOUSE_HOOK_TX.get(),
+        MOUSE_HOOK_STATE.get(),
+        MOUSE_HOOK_INPUT.get(),
+    ) else {
+        return;
+    };
+
+    let Some(s) = safe_lock(state) else {
+        return;
+    };
+
+    let Some(feature) = s.features.iter().find(|f| f.enabled && f.bind_key == Some(bind_key)) else {
+        return;
+    };
+
+    let feature_id = feature.id;
+    let x = s.x_offset;
+    let y = s.y_offset;
+    let w = s.width;
+    let h = s.height;
+    let tips_y = s.tips_skip_y_offset;
+    let restart_y = s.restart_y_offset;
+    let hack_y = s.hacking_y_offset;
+    let hack2_y = s.hacking2_y_offset;
+    let hack_esc_y = s.hacking_esc_y_offset;
+    let gun_digit = s.gun_tool_digit;
+    drop(s);
+
+    if feature_id == FeatureId::ToggleAllMacros {
+        let _ = input.toggle_all_macros_disabled();
+        return;
+    }
+    if input.are_all_macros_disabled() {
+        return;
+    }
+    if feature_id == FeatureId::AutoClicker {
+        let _ = input.toggle_autoclicker();
+        return;
+    }
+    if feature_id == FeatureId::Bhop {
+        let _ = input.toggle_bhop();
+        return;
+    }
+    if feature_id == FeatureId::KeepItemClicker {
+        let _ = input.toggle_lmb_hold();
+        return;
+    }
+
+    let msg = match feature_id {
+        FeatureId::ShiftToggle => Some(WorkerMessage::ShiftToggle),
+        FeatureId::NoFallDamage => Some(WorkerMessage::NoFallDamage),
+        FeatureId::HackingClickMtd => Some(WorkerMessage::HackingClickMtd { x, y, w, h, offset_y: hack_y }),
+        FeatureId::HackingJumpMtd => Some(WorkerMessage::HackingJumpMtd { x, y, w, h, offset_y: hack2_y }),
+        FeatureId::HackingEscMtd => Some(WorkerMessage::HackingEscMtd { x, y, w, h, offset_y: hack_esc_y }),
+        FeatureId::TipsSkip => Some(WorkerMessage::TipsSkip { x, w, y: y + tips_y }),
+        FeatureId::Restart => Some(WorkerMessage::Restart { x, w, y: y + restart_y }),
+        FeatureId::FastLoadout => Some(WorkerMessage::FastLoadout),
+        FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
+        FeatureId::GangstaGrip => Some(WorkerMessage::GangstaGrip { digit: gun_digit }),
+        FeatureId::QuickExit => Some(WorkerMessage::QuickExit { x, y }),
+        _ => None,
+    };
+
+    if let Some(m) = msg {
+        let _ = tx.send(m);
+    }
 }
 
 unsafe extern "system" fn low_level_keyboard_proc(
@@ -638,17 +737,45 @@ fn default_auto_clicker_key() -> ConfigKey {
     ConfigKey::KeyE
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BindKey {
+    Keyboard(Key),
+    MouseMiddle,
+    Mouse4,
+    Mouse5,
+}
+
+impl BindKey {
+    pub fn to_string(&self) -> String {
+        match self {
+            BindKey::Keyboard(k) => key_to_string(*k),
+            BindKey::MouseMiddle => "Mouse Middle".to_string(),
+            BindKey::Mouse4 => "Mouse 4".to_string(),
+            BindKey::Mouse5 => "Mouse 5".to_string(),
+        }
+    }
+
+    pub fn from_string(s: &str) -> Option<Self> {
+        match s {
+            "Mouse Middle" => Some(BindKey::MouseMiddle),
+            "Mouse 4" => Some(BindKey::Mouse4),
+            "Mouse 5" => Some(BindKey::Mouse5),
+            _ => string_to_key(s).map(BindKey::Keyboard),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct SerializableFeature {
     id: FeatureId,
-    rdev_key: Option<String>,
+    bind_key: Option<String>,
     enabled: bool,
 }
 
 struct Feature {
     id: FeatureId,
     name: String,
-    rdev_key: Option<Key>,
+    bind_key: Option<BindKey>,
     enabled: bool,
     selecting: bool,
 }
@@ -695,14 +822,24 @@ fn get_presets_dir() -> std::path::PathBuf {
 
 // Convert rdev::Key to ConfigKey then to string
 fn key_to_string(key: Key) -> String {
-    ConfigKey::from_rdev(key)
+    let s = ConfigKey::from_rdev(key)
         .map(|k| k.to_string())
-        .unwrap_or_else(|| format!("{:?}", key))
+        .unwrap_or_else(|| format!("{:?}", key));
+    if s.starts_with("Key") && s.len() == 4 {
+        s[3..].to_uppercase()
+    } else {
+        s
+    }
 }
 
 // Convert string to ConfigKey then to rdev::Key
 fn string_to_key(s: &str) -> Option<Key> {
-    s.parse::<ConfigKey>().ok().map(|k| k.to_rdev())
+    let normalized = if s.len() == 1 && s.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+        format!("Key{}", s.to_uppercase())
+    } else {
+        s.to_string()
+    };
+    normalized.parse::<ConfigKey>().ok().map(|k| k.to_rdev())
 }
 
 impl AppState {
@@ -721,7 +858,7 @@ impl AppState {
             .iter()
             .map(|f| SerializableFeature {
                 id: f.id,
-                rdev_key: f.rdev_key.as_ref().map(|k| key_to_string(*k)),
+                bind_key: f.bind_key.as_ref().map(|k| k.to_string()),
                 enabled: f.enabled,
             })
             .collect();
@@ -775,7 +912,7 @@ impl AppState {
         // Load features
         for sf in config.features {
             if let Some(feature) = self.features.iter_mut().find(|f| f.id == sf.id) {
-                feature.rdev_key = sf.rdev_key.as_ref().and_then(|k| string_to_key(k));
+                feature.bind_key = sf.bind_key.as_deref().and_then(BindKey::from_string);
                 feature.enabled = sf.enabled;
             }
         }
@@ -830,7 +967,7 @@ impl AppState {
             .iter()
             .map(|f| SerializableFeature {
                 id: f.id,
-                rdev_key: f.rdev_key.as_ref().map(|k| key_to_string(*k)),
+                bind_key: f.bind_key.as_ref().map(|k| k.to_string()),
                 enabled: f.enabled,
             })
             .collect();
@@ -873,7 +1010,7 @@ impl AppState {
 
         for sf in config.features {
             if let Some(feature) = self.features.iter_mut().find(|f| f.id == sf.id) {
-                feature.rdev_key = sf.rdev_key.as_ref().and_then(|k| string_to_key(k));
+                feature.bind_key = sf.bind_key.as_deref().and_then(BindKey::from_string);
                 feature.enabled = sf.enabled;
             }
         }
@@ -914,105 +1051,105 @@ impl AppState {
                 Feature {
                     id: FeatureId::HackingClickMtd,
                     name: "Hacking Device (Click mtd)".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::HackingJumpMtd,
                     name: "Hacking Device (Jump mtd)".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::HackingEscMtd,
                     name: "Hacking Device (Esc mtd)".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::TipsSkip,
                     name: "Tips Skip".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::Restart,
                     name: "Restart".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::NoFallDamage,
                     name: "No Fall Damage".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::ShiftToggle,
                     name: "Shift Toggle".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::AutoClicker,
                     name: "Auto Clicker".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::KeepItemClicker,
                     name: "Keep Item Clicker".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::FastLoadout,
                     name: "Fast Loadout".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::Bhop,
                     name: "Bhop".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::HoldItemBug,
                     name: "Hold Item Bug".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::GangstaGrip,
                     name: "Gangsta Grip (In multiplayer)".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::QuickExit,
                     name: "Quick Exit".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
                 Feature {
                     id: FeatureId::ToggleAllMacros,
                     name: "Toggle All Macros".into(),
-                    rdev_key: None,
+                    bind_key: None,
                     enabled: false,
                     selecting: false,
                 },
@@ -1129,6 +1266,9 @@ struct KeyBindApp {
     prev_shift: bool,
     prev_alt: bool,
     prev_capslock: bool,
+    prev_mouse_mid: bool,
+    prev_mouse4: bool,
+    prev_mouse5: bool,
 }
 
 impl Drop for KeyBindApp {
@@ -1164,6 +1304,11 @@ impl KeyBindApp {
         let (worker_tx, worker_rx) = mpsc::channel::<WorkerMessage>();
         let worker_tx_mod = worker_tx.clone();
         let worker_tx_hk = worker_tx.clone();
+
+        // store refs for the mouse hook to use
+        let _ = MOUSE_HOOK_TX.set(worker_tx.clone());
+        let _ = MOUSE_HOOK_STATE.set(state.clone());
+        let _ = MOUSE_HOOK_INPUT.set(input_state.clone());
 
         // Start the real mouse listener in a separate thread with a message loop
         thread::spawn(move || {
@@ -1289,7 +1434,7 @@ impl KeyBindApp {
                         && let Some(f) = s
                             .features
                             .iter()
-                            .find(|f| f.enabled && f.rdev_key == Some(Key::ShiftLeft))
+                            .find(|f| f.enabled && f.bind_key == Some(BindKey::Keyboard(Key::ShiftLeft)))
                             && f.id == FeatureId::ShiftToggle {
                                 let _ = worker_tx_mod.send(WorkerMessage::ShiftToggle);
                             }
@@ -1461,12 +1606,17 @@ impl KeyBindApp {
                 }
 
                 // If it's a mouse event, just let it pass through to the system
-                if let EventType::ButtonPress(_)
-                | EventType::ButtonRelease(_)
+                if let EventType::ButtonRelease(_)
                 | EventType::MouseMove { .. }
                 | EventType::Wheel { .. } = event.event_type
                 {
                     return Some(event);
+                }
+
+                if let EventType::ButtonPress(b) = event.event_type {
+                    if b == rdev::Button::Left || b == rdev::Button::Right {
+                        return Some(event);
+                    }
                 }
 
                 // Check if game is focused before handling hotkeys
@@ -1481,11 +1631,19 @@ impl KeyBindApp {
                         return Some(event);
                     };
 
-                    if let EventType::KeyPress(key) = event.event_type {
+                    let matched_key = match event.event_type {
+                        EventType::KeyPress(k) => Some(BindKey::Keyboard(k)),
+                        EventType::ButtonPress(rdev::Button::Middle) => Some(BindKey::MouseMiddle),
+                        EventType::ButtonPress(rdev::Button::Unknown(4)) => Some(BindKey::Mouse4),
+                        EventType::ButtonPress(rdev::Button::Unknown(5)) => Some(BindKey::Mouse5),
+                        _ => None,
+                    };
+
+                    if let Some(key) = matched_key {
                         if let Some(feature) = s
                             .features
                             .iter()
-                            .find(|f| f.enabled && f.rdev_key == Some(key))
+                            .find(|f| f.enabled && f.bind_key == Some(key))
                         {
                             let feature_id = feature.id;
                             let x = s.x_offset;
@@ -1905,22 +2063,35 @@ impl eframe::App for KeyBindApp {
             });
 
             // check mods via winapi (bypasses egui focus block)
-            let ctrl_down =
-                unsafe { (GetAsyncKeyState(VK_CONTROL.0 as i32) & 0x8000u16 as i16) != 0 };
-            let shift_down =
-                unsafe { (GetAsyncKeyState(VK_SHIFT.0 as i32) & 0x8000u16 as i16) != 0 };
+            let ctrl_down = unsafe { (GetAsyncKeyState(VK_CONTROL.0 as i32) & 0x8000u16 as i16) != 0 };
+            let shift_down = unsafe { (GetAsyncKeyState(VK_SHIFT.0 as i32) & 0x8000u16 as i16) != 0 };
             let alt_down = unsafe { (GetAsyncKeyState(VK_MENU.0 as i32) & 0x8000u16 as i16) != 0 };
-            let capslock_down =
-                unsafe { (GetAsyncKeyState(VK_CAPITAL.0 as i32) & 0x8000u16 as i16) != 0 };
+            let capslock_down = unsafe { (GetAsyncKeyState(VK_CAPITAL.0 as i32) & 0x8000u16 as i16) != 0 };
+            let mouse_mid_down = unsafe { (GetAsyncKeyState(0x04) & 0x8000u16 as i16) != 0 };
+            let mouse4_down = unsafe { (GetAsyncKeyState(0x05) & 0x8000u16 as i16) != 0 };
+            let mouse5_down = unsafe { (GetAsyncKeyState(0x06) & 0x8000u16 as i16) != 0 };
 
-            let modifier_key = if ctrl_down && !self.prev_ctrl {
-                Some(KeyModifier::Ctrl)
+            let new_bind = if ctrl_down && !self.prev_ctrl {
+                Some(BindKey::Keyboard(Key::ControlLeft))
             } else if shift_down && !self.prev_shift {
-                Some(KeyModifier::Shift)
+                Some(BindKey::Keyboard(Key::ShiftLeft))
             } else if alt_down && !self.prev_alt {
-                Some(KeyModifier::Alt)
+                Some(BindKey::Keyboard(Key::Alt))
             } else if capslock_down && !self.prev_capslock {
-                Some(KeyModifier::CapsLock)
+                Some(BindKey::Keyboard(Key::CapsLock))
+            } else if mouse_mid_down && !self.prev_mouse_mid {
+                Some(BindKey::MouseMiddle)
+            } else if mouse4_down && !self.prev_mouse4 {
+                Some(BindKey::Mouse4)
+            } else if mouse5_down && !self.prev_mouse5 {
+                Some(BindKey::Mouse5)
+            } else if let Some(k) = key {
+                if k == egui::Key::Escape {
+                    s.features[idx].selecting = false;
+                    None
+                } else {
+                    egui_to_rdev_key(k).map(BindKey::Keyboard)
+                }
             } else {
                 None
             };
@@ -1929,36 +2100,20 @@ impl eframe::App for KeyBindApp {
             self.prev_shift = shift_down;
             self.prev_alt = alt_down;
             self.prev_capslock = capslock_down;
+            self.prev_mouse_mid = mouse_mid_down;
+            self.prev_mouse4 = mouse4_down;
+            self.prev_mouse5 = mouse5_down;
 
-            if let Some(k) = key {
-                if k == egui::Key::Escape {
-                    s.features[idx].selecting = false;
-                } else {
-                    let rd_key = egui_to_rdev_key(k);
-                    if rd_key.is_some() {
-                        s.features[idx].rdev_key = rd_key;
-                        s.features[idx].selecting = false;
-                        let _ = s.save_config();
-                    }
-                }
-            } else if let Some(modifier) = modifier_key {
-                let rd_key = match modifier {
-                    KeyModifier::Ctrl => Some(Key::ControlLeft),
-                    KeyModifier::Shift => Some(Key::ShiftLeft),
-                    KeyModifier::Alt => Some(Key::Alt),
-                    KeyModifier::CapsLock => Some(Key::CapsLock),
-                };
-                if rd_key.is_some() {
-                    s.features[idx].rdev_key = rd_key;
-                    s.features[idx].selecting = false;
-                    let _ = s.save_config();
-                }
+            if let Some(bk) = new_bind {
+                s.features[idx].bind_key = Some(bk);
+                s.features[idx].selecting = false;
+                let _ = s.save_config();
             }
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-            let title = "Nztool OAR v2.3.3";
+            let title = "Nztool OAR v2.3.4";
             ui.vertical_centered(|ui| {
                 ui.heading(title);
                 if InputState.are_all_macros_disabled() {
@@ -1980,8 +2135,8 @@ impl eframe::App for KeyBindApp {
                         // 2. Select Key Button
                         let key_text = if s.features[i].selecting {
                             "Waiting...".into()
-                        } else if let Some(k) = s.features[i].rdev_key {
-                            rdev_key_to_name(k)
+                        } else if let Some(k) = s.features[i].bind_key {
+                            k.to_string()
                         } else {
                             "Select Key".into()
                         };
@@ -1999,7 +2154,7 @@ impl eframe::App for KeyBindApp {
                                 InputState.set_lmb_hold_active(false);
                                 send_mouse_hold(false);
                             }
-                            s.features[i].rdev_key = None;
+                            s.features[i].bind_key = None;
                             s.features[i].enabled = false;
                             s.features[i].selecting = false;
                             let _ = s.save_config();
@@ -2032,7 +2187,7 @@ impl eframe::App for KeyBindApp {
                         if ui
                             .add(egui::Button::new("Enable/Disable").fill(color))
                             .clicked()
-                            && s.features[i].rdev_key.is_some() {
+                            && s.features[i].bind_key.is_some() {
                                 s.features[i].enabled = !s.features[i].enabled;
                                 if !s.features[i].enabled {
                                     if s.features[i].id == FeatureId::ShiftToggle {
@@ -2614,68 +2769,6 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
     }
 }
 
-fn rdev_key_to_name(key: Key) -> String {
-    ConfigKey::from_rdev(key)
-        .map(|k| match k {
-            ConfigKey::KeyA => "A".to_string(),
-            ConfigKey::KeyB => "B".to_string(),
-            ConfigKey::KeyC => "C".to_string(),
-            ConfigKey::KeyD => "D".to_string(),
-            ConfigKey::KeyE => "E".to_string(),
-            ConfigKey::KeyF => "F".to_string(),
-            ConfigKey::KeyG => "G".to_string(),
-            ConfigKey::KeyH => "H".to_string(),
-            ConfigKey::KeyI => "I".to_string(),
-            ConfigKey::KeyJ => "J".to_string(),
-            ConfigKey::KeyK => "K".to_string(),
-            ConfigKey::KeyL => "L".to_string(),
-            ConfigKey::KeyM => "M".to_string(),
-            ConfigKey::KeyN => "N".to_string(),
-            ConfigKey::KeyO => "O".to_string(),
-            ConfigKey::KeyP => "P".to_string(),
-            ConfigKey::KeyQ => "Q".to_string(),
-            ConfigKey::KeyR => "R".to_string(),
-            ConfigKey::KeyS => "S".to_string(),
-            ConfigKey::KeyT => "T".to_string(),
-            ConfigKey::KeyU => "U".to_string(),
-            ConfigKey::KeyV => "V".to_string(),
-            ConfigKey::KeyW => "W".to_string(),
-            ConfigKey::KeyX => "X".to_string(),
-            ConfigKey::KeyY => "Y".to_string(),
-            ConfigKey::KeyZ => "Z".to_string(),
-            ConfigKey::Num0 => "0".to_string(),
-            ConfigKey::Num1 => "1".to_string(),
-            ConfigKey::Num2 => "2".to_string(),
-            ConfigKey::Num3 => "3".to_string(),
-            ConfigKey::Num4 => "4".to_string(),
-            ConfigKey::Num5 => "5".to_string(),
-            ConfigKey::Num6 => "6".to_string(),
-            ConfigKey::Num7 => "7".to_string(),
-            ConfigKey::Num8 => "8".to_string(),
-            ConfigKey::Num9 => "9".to_string(),
-            ConfigKey::ControlLeft | ConfigKey::ControlRight => "Ctrl".to_string(),
-            ConfigKey::ShiftLeft | ConfigKey::ShiftRight => "Shift".to_string(),
-            ConfigKey::UpArrow => "↑".to_string(),
-            ConfigKey::DownArrow => "↓".to_string(),
-            ConfigKey::LeftArrow => "←".to_string(),
-            ConfigKey::RightArrow => "→".to_string(),
-            ConfigKey::Return => "Enter".to_string(),
-            ConfigKey::Comma => ",".to_string(),
-            ConfigKey::Dot => ".".to_string(),
-            ConfigKey::Slash => "/".to_string(),
-            ConfigKey::SemiColon => ";".to_string(),
-            ConfigKey::Quote => "'".to_string(),
-            ConfigKey::LeftBracket => "[".to_string(),
-            ConfigKey::RightBracket => "]".to_string(),
-            ConfigKey::BackSlash => "\\".to_string(),
-            ConfigKey::Minus => "-".to_string(),
-            ConfigKey::Equal => "=".to_string(),
-            ConfigKey::Backquote => "`".to_string(),
-            _ => k.to_string(),
-        })
-        .unwrap_or_else(|| format!("{:?}", key))
-}
-
 fn load_icon() -> egui::IconData {
     let img = image::load_from_memory(include_bytes!("nz.ico")).unwrap();
     let rgba = img.to_rgba8();
@@ -2710,6 +2803,9 @@ fn main() -> eframe::Result {
                 prev_shift: false,
                 prev_alt: false,
                 prev_capslock: false,
+                prev_mouse_mid: false,
+                prev_mouse4: false,
+                prev_mouse5: false,
             }))
         }),
     )
