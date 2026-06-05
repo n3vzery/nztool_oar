@@ -4,6 +4,7 @@ use eframe::egui;
 use log::{error, info, warn};
 use rdev::{grab, Event, EventType, Key};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -2034,6 +2035,46 @@ impl eframe::App for KeyBindApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if let Some(state_lock) = UPDATE_STATE.get() {
+            if let Ok(mut update) = state_lock.lock() {
+                if update.has_update && !update.skipped {
+                    let mut is_open = true;
+                    egui::Window::new("Update Available")
+                        .collapsible(false)
+                        .resizable(false)
+                        .open(&mut is_open)
+                        .show(ctx, |ui| {
+                            ui.label(format!(
+                                "A new update ({}) is available. Do you want to update?",
+                                update.new_version
+                            ));
+                            ui.add_space(8.0);
+                            
+                            if update.in_progress {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(&update.status);
+                                });
+                            } else {
+                                ui.label(&update.status);
+                                ui.add_space(8.0);
+                                ui.horizontal(|ui| {
+                                    if ui.button("Update").clicked() {
+                                        start_update();
+                                    }
+                                    if ui.button("Skip").clicked() {
+                                        update.skipped = true;
+                                    }
+                                });
+                            }
+                        });
+                    if !is_open {
+                        update.skipped = true;
+                    }
+                }
+            }
+        }
+
         let Some(mut s) = safe_lock(&self.state) else {
             error!("Failed to lock state in UI update");
             return;
@@ -2769,6 +2810,148 @@ fn egui_to_rdev_key(key: egui::Key) -> Option<Key> {
     }
 }
 
+struct UpdateState {
+    has_update: bool,
+    new_version: String,
+    download_url: String,
+    skipped: bool,
+    in_progress: bool,
+    status: String,
+}
+
+static UPDATE_STATE: OnceLock<Arc<Mutex<UpdateState>>> = OnceLock::new();
+
+#[derive(serde::Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+fn is_version_newer(new: &str, current: &str) -> bool {
+    let new_parts: Vec<&str> = new.split('.').collect();
+    let cur_parts: Vec<&str> = current.split('.').collect();
+    for i in 0..std::cmp::max(new_parts.len(), cur_parts.len()) {
+        let n = new_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let c = cur_parts.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        if n > c {
+            return true;
+        } else if n < c {
+            return false;
+        }
+    }
+    false
+}
+
+fn check_for_updates() {
+    let state = UPDATE_STATE.get().unwrap().clone();
+    thread::spawn(move || {
+        let response = ureq::get("https://api.github.com/repos/n3vzery/nztool_oar/releases/latest")
+            .set("User-Agent", "nztool_oar")
+            .call();
+
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to check for updates: {:?}", e);
+                return;
+            }
+        };
+
+        let release: GithubRelease = match response.into_json() {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to parse update release JSON: {:?}", e);
+                return;
+            }
+        };
+
+        let clean_tag = release.tag_name.trim_start_matches('v');
+        let current_version = "2.3.4";
+
+        if is_version_newer(clean_tag, current_version) {
+            if let Some(asset) = release.assets.iter().find(|a| a.name == "nztool_oar.exe") {
+                if let Ok(mut s) = state.lock() {
+                    s.has_update = true;
+                    s.new_version = release.tag_name.clone();
+                    s.download_url = asset.browser_download_url.clone();
+                    s.status = format!("New version {} is available!", release.tag_name);
+                }
+            }
+        }
+    });
+}
+
+fn start_update() {
+    let state = UPDATE_STATE.get().unwrap().clone();
+    thread::spawn(move || {
+        let download_url = {
+            let mut s = state.lock().unwrap();
+            s.in_progress = true;
+            s.status = "Downloading update...".to_string();
+            s.download_url.clone()
+        };
+
+        let response = match ureq::get(&download_url).call() {
+            Ok(r) => r,
+            Err(e) => {
+                let mut s = state.lock().unwrap();
+                s.status = format!("Download failed: {:?}", e);
+                s.in_progress = false;
+                return;
+            }
+        };
+
+        let mut bytes = Vec::new();
+        if let Err(e) = response.into_reader().read_to_end(&mut bytes) {
+            let mut s = state.lock().unwrap();
+            s.status = format!("Failed to read data: {:?}", e);
+            s.in_progress = false;
+            return;
+        }
+
+        let exe_path = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                let mut s = state.lock().unwrap();
+                s.status = format!("Failed to get current exe path: {:?}", e);
+                s.in_progress = false;
+                return;
+            }
+        };
+
+        let mut old_path = exe_path.clone();
+        old_path.set_extension("exe.old");
+        
+        if old_path.exists() {
+            let _ = std::fs::remove_file(&old_path);
+        }
+
+        if let Err(e) = std::fs::rename(&exe_path, &old_path) {
+            let mut s = state.lock().unwrap();
+            s.status = format!("Failed to rename current exe: {:?}", e);
+            s.in_progress = false;
+            return;
+        }
+
+        if let Err(e) = std::fs::write(&exe_path, bytes) {
+            let _ = std::fs::rename(&old_path, &exe_path);
+            let mut s = state.lock().unwrap();
+            s.status = format!("Failed to write new exe: {:?}", e);
+            s.in_progress = false;
+            return;
+        }
+
+        let _ = std::process::Command::new(&exe_path).spawn();
+        std::process::exit(0);
+    });
+}
+
 fn load_icon() -> egui::IconData {
     let img = image::load_from_memory(include_bytes!("nz.ico")).unwrap();
     let rgba = img.to_rgba8();
@@ -2782,6 +2965,28 @@ fn load_icon() -> egui::IconData {
 
 fn main() -> eframe::Result {
     let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
+
+    // Clean up old executable if it exists
+    if let Ok(mut exe_path) = std::env::current_exe() {
+        exe_path.set_extension("exe.old");
+        if exe_path.exists() {
+            let _ = std::fs::remove_file(exe_path);
+        }
+    }
+
+    // Initialize update state
+    let _ = UPDATE_STATE.set(Arc::new(Mutex::new(UpdateState {
+        has_update: false,
+        new_version: String::new(),
+        download_url: String::new(),
+        skipped: false,
+        in_progress: false,
+        status: String::new(),
+    })));
+
+    // Trigger background update check
+    check_for_updates();
+
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
