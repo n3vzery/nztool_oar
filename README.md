@@ -18,7 +18,8 @@
 ### Support:
 * **If you like my work, you can [support the project here](https://app.lava.top/n3vzery?tabId=donate)**
 ---
-<img width="450" height="581" alt="image" src="https://github.com/user-attachments/assets/8865d801-eddc-4e85-acbd-e7ad36def438" />
+<img width="450" height="581" alt="image" src="https://github.com/user-attachments/assets/bcb365a8-daff-47b7-a764-fd86780a58bb" />
+
 
 
 
