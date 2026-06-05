@@ -2527,11 +2527,6 @@ impl eframe::App for KeyBindApp {
                             .spawn();
                     }
                 }
-
-                ui.add_space(5.0);
-                if ui.button("Gangsta Grip (No delay)").clicked() {
-                    Self::gangsta_grip(s.gun_tool_digit);
-                }
             }
         });
     });
