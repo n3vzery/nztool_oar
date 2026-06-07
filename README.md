@@ -8,6 +8,7 @@
 * **Shift Toggle**
 * **Auto Clicker**
 * **Keep Item Clicker**
+* **Double Click**
 * **Fast Loadout**
 * **Bhop**
 * **Hold Item Bug**
