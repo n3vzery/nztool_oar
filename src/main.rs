@@ -129,6 +129,7 @@ enum WorkerMessage {
     HoldItemBug,
     GangstaGrip { digit: u32 },
     QuickExit { x: i32, y: i32 },
+    DoubleClick(DoubleClickButton),
 }
 
 // InputState provides a clean API over the global state
@@ -485,6 +486,7 @@ fn handle_mouse_bind(bind_key: BindKey) {
     let hack2_y = s.hacking2_y_offset;
     let hack_esc_y = s.hacking_esc_y_offset;
     let gun_digit = s.gun_tool_digit;
+    let double_click_btn = s.double_click_button;
     drop(s);
 
     if feature_id == FeatureId::ToggleAllMacros {
@@ -519,6 +521,7 @@ fn handle_mouse_bind(bind_key: BindKey) {
         FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
         FeatureId::GangstaGrip => Some(WorkerMessage::GangstaGrip { digit: gun_digit }),
         FeatureId::QuickExit => Some(WorkerMessage::QuickExit { x, y }),
+        FeatureId::DoubleClick => Some(WorkerMessage::DoubleClick(double_click_btn)),
         _ => None,
     };
 
@@ -616,6 +619,7 @@ pub enum FeatureId {
     GangstaGrip,
     QuickExit,
     ToggleAllMacros,
+    DoubleClick,
 }
 
 impl std::fmt::Display for FeatureId {
@@ -643,7 +647,24 @@ impl std::str::FromStr for FeatureId {
             "GangstaGrip" | "GunAndTool" => Ok(Self::GangstaGrip),
             "QuickExit" => Ok(Self::QuickExit),
             "ToggleAllMacros" => Ok(Self::ToggleAllMacros),
+            "DoubleClick" => Ok(Self::DoubleClick),
             _ => Err(format!("Unknown variant: {}", s)),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+pub enum DoubleClickButton {
+    #[default]
+    Left,
+    Right,
+}
+
+impl std::fmt::Display for DoubleClickButton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DoubleClickButton::Left => write!(f, "LMB"),
+            DoubleClickButton::Right => write!(f, "RMB"),
         }
     }
 }
@@ -707,7 +728,12 @@ struct SerializableConfig {
     hacking_esc_y_offset: i32,
     #[serde(default = "default_gun_tool_digit")]
     gun_tool_digit: u32,
+    #[serde(default = "default_double_click_button")]
+    double_click_button: DoubleClickButton,
+}
 
+fn default_double_click_button() -> DoubleClickButton {
+    DoubleClickButton::Left
 }
 
 fn default_tips_skip_y() -> i32 {
@@ -806,6 +832,7 @@ struct AppState {
     presets: Vec<String>,
     selected_preset: String,
     preset_name_input: String,
+    double_click_button: DoubleClickButton,
 }
 
 // Get the path to the config directory and file
@@ -880,6 +907,7 @@ impl AppState {
             hacking2_y_offset: self.hacking2_y_offset,
             hacking_esc_y_offset: self.hacking_esc_y_offset,
             gun_tool_digit: self.gun_tool_digit,
+            double_click_button: self.double_click_button,
         };
 
         // Write to file with pretty formatting
@@ -932,7 +960,8 @@ impl AppState {
         self.hacking2_y_offset = config.hacking2_y_offset;
         self.hacking_esc_y_offset = config.hacking_esc_y_offset;
         self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
- 
+        self.double_click_button = config.double_click_button;
+
         Ok(())
     }
 
@@ -989,6 +1018,7 @@ impl AppState {
             hacking2_y_offset: self.hacking2_y_offset,
             hacking_esc_y_offset: self.hacking_esc_y_offset,
             gun_tool_digit: self.gun_tool_digit,
+            double_click_button: self.double_click_button,
         };
 
         let json = serde_json::to_string_pretty(&config)?;
@@ -1029,6 +1059,7 @@ impl AppState {
         self.hacking2_y_offset = config.hacking2_y_offset;
         self.hacking_esc_y_offset = config.hacking_esc_y_offset;
         self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
+        self.double_click_button = config.double_click_button;
 
         let _ = self.save_config();
 
@@ -1154,6 +1185,13 @@ impl AppState {
                     enabled: false,
                     selecting: false,
                 },
+                Feature {
+                    id: FeatureId::DoubleClick,
+                    name: "Double Click".into(),
+                    bind_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
             ],
             monitor_id: "1".into(),
             x_offset: 0,
@@ -1178,6 +1216,7 @@ impl AppState {
             presets: Vec::new(),
             selected_preset: String::new(),
             preset_name_input: String::new(),
+            double_click_button: DoubleClickButton::Left,
         };
         state.update_screen_position();
         state.refresh_presets();
@@ -1256,6 +1295,7 @@ impl AppState {
         self.selected_preset = String::new();
         self.preset_name_input = String::new();
         self.monitor_id = "1".to_string();
+        self.double_click_button = DoubleClickButton::Left;
         self.update_screen_position();
         self.refresh_presets();
     }
@@ -1594,6 +1634,9 @@ impl KeyBindApp {
                     WorkerMessage::QuickExit { x, y } => {
                         Self::quick_exit(x, y);
                     }
+                    WorkerMessage::DoubleClick(btn) => {
+                        Self::double_click(btn);
+                    }
                 }
             }
         });
@@ -1657,6 +1700,7 @@ impl KeyBindApp {
                             let hack2_y = s.hacking2_y_offset;
                             let hack_esc_y = s.hacking_esc_y_offset;
                             let gun_digit = s.gun_tool_digit;
+                            let double_click_btn = s.double_click_button;
 
                             // Handle toggle features immediately
                             if feature_id == FeatureId::ToggleAllMacros {
@@ -1728,6 +1772,7 @@ impl KeyBindApp {
                                 FeatureId::HoldItemBug => Some(WorkerMessage::HoldItemBug),
                                 FeatureId::GangstaGrip => Some(WorkerMessage::GangstaGrip { digit: gun_digit }),
                                 FeatureId::QuickExit => Some(WorkerMessage::QuickExit { x, y }),
+                                FeatureId::DoubleClick => Some(WorkerMessage::DoubleClick(double_click_btn)),
                                 _ => None,
                             };
 
@@ -2009,6 +2054,48 @@ impl KeyBindApp {
         move_mouse(x_offset + 719, y_offset + 546);
         thread::sleep(Duration::from_millis(QUICK_EXIT_DELAY_MS));
         send_mouse_click();
+    }
+
+    fn double_click(btn: DoubleClickButton) {
+        let (down_flag, up_flag) = match btn {
+            DoubleClickButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+            DoubleClickButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        };
+        unsafe {
+            let mut input_down1 = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
+            input_down1.Anonymous.mi.dwFlags = down_flag;
+
+            let mut input_up1 = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
+            input_up1.Anonymous.mi.dwFlags = up_flag;
+
+            if SendInput(&[input_down1, input_up1], std::mem::size_of::<INPUT>() as i32) == 0 {
+                error!("SendInput failed in double_click first tap");
+            }
+
+            thread::sleep(Duration::from_millis(20));
+
+            let mut input_down2 = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
+            input_down2.Anonymous.mi.dwFlags = down_flag;
+
+            let mut input_up2 = INPUT {
+                r#type: INPUT_MOUSE,
+                ..Default::default()
+            };
+            input_up2.Anonymous.mi.dwFlags = up_flag;
+
+            if SendInput(&[input_down2, input_up2], std::mem::size_of::<INPUT>() as i32) == 0 {
+                error!("SendInput failed in double_click second tap");
+            }
+        }
     }
 
     fn send_mouse_state(down: bool) {
@@ -2352,6 +2439,23 @@ impl eframe::App for KeyBindApp {
                         });
                     }
                 }
+
+                ui.add_space(5.0);
+
+                // Double Click Button selection
+                ui.horizontal(|ui| {
+                    ui.label("Double Click Button:");
+                    let left_selected = s.double_click_button == DoubleClickButton::Left;
+                    let right_selected = s.double_click_button == DoubleClickButton::Right;
+                    if ui.selectable_label(left_selected, "LMB").clicked() {
+                        s.double_click_button = DoubleClickButton::Left;
+                        let _ = s.save_config();
+                    }
+                    if ui.selectable_label(right_selected, "RMB").clicked() {
+                        s.double_click_button = DoubleClickButton::Right;
+                        let _ = s.save_config();
+                    }
+                });
 
                 ui.add_space(5.0);
 
