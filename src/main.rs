@@ -1144,6 +1144,13 @@ impl AppState {
                     selecting: false,
                 },
                 Feature {
+                    id: FeatureId::DoubleClick,
+                    name: "Double Click".into(),
+                    bind_key: None,
+                    enabled: false,
+                    selecting: false,
+                },
+                Feature {
                     id: FeatureId::FastLoadout,
                     name: "Fast Loadout".into(),
                     bind_key: None,
@@ -1181,13 +1188,6 @@ impl AppState {
                 Feature {
                     id: FeatureId::ToggleAllMacros,
                     name: "Toggle All Macros".into(),
-                    bind_key: None,
-                    enabled: false,
-                    selecting: false,
-                },
-                Feature {
-                    id: FeatureId::DoubleClick,
-                    name: "Double Click".into(),
                     bind_key: None,
                     enabled: false,
                     selecting: false,
@@ -2241,7 +2241,7 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-            let title = "Nztool OAR v2.3.4";
+            let title = "Nztool OAR v2.3.5";
             ui.vertical_centered(|ui| {
                 ui.heading(title);
                 if InputState.are_all_macros_disabled() {
@@ -2971,7 +2971,7 @@ fn check_for_updates() {
         };
 
         let clean_tag = release.tag_name.trim_start_matches('v');
-        let current_version = "2.3.4";
+        let current_version = "2.3.5";
 
         if is_version_newer(clean_tag, current_version) {
             if let Some(asset) = release.assets.iter().find(|a| a.name == "nztool_oar.exe") {
