@@ -7,12 +7,17 @@ fn main() {
         r"C:\Program Files (x86)\Windows Kits\10\bin\x64",
     ];
 
-    let rc_exe = kit_dirs.iter().map(|d| format!(r"{}\rc.exe", d)).find(|p| std::path::Path::new(p).exists());
+    let rc_exe = kit_dirs
+        .iter()
+        .map(|d| format!(r"{}\rc.exe", d))
+        .find(|p| std::path::Path::new(p).exists());
 
     if let Some(ref rc_exe) = rc_exe {
         let out_dir = std::env::var("OUT_DIR").unwrap();
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let rc_file = std::path::Path::new(&manifest_dir).join("src").join("app.rc");
+        let rc_file = std::path::Path::new(&manifest_dir)
+            .join("src")
+            .join("app.rc");
         let res_file = std::path::Path::new(&out_dir).join("app.res");
 
         eprintln!("rc_exe: {}", rc_exe);
