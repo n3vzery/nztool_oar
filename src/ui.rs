@@ -272,7 +272,7 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let title = "Nztool OAR v2.4.1";
+                let title = "Nztool OAR v2.4.2";
                 ui.vertical_centered(|ui| {
                     ui.heading(title);
                     if InputState.are_all_macros_disabled() {

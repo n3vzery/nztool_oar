@@ -45,7 +45,7 @@ fn main() -> eframe::Result<()> {
     hooks::start_hotkey_listener(state.clone(), InputState);
 
     eframe::run_native(
-        "nztool oar - v2.4.1",
+        "nztool oar - v2.4.2",
         options,
         Box::new(|_cc| Ok(Box::new(ui::KeyBindApp::new(state)))),
     )
