@@ -157,7 +157,7 @@ impl eframe::App for KeyBindApp {
                                 egui::ScrollArea::vertical()
                                     .max_height(200.0)
                                     .show(ui, |ui| {
-                                        ui.label(body);
+                                        render_markdown(ui, body);
                                     });
                                 ui.add_space(8.0);
                             }
@@ -695,4 +695,118 @@ impl eframe::App for KeyBindApp {
             });
         });
     }
+}
+
+fn render_markdown(ui: &mut egui::Ui, text: &str) {
+    ui.vertical(|ui| {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                ui.add_space(4.0);
+                continue;
+            }
+            if let Some(header) = line.strip_prefix("# ") {
+                ui.heading(header);
+            } else if let Some(header) = line.strip_prefix("## ") {
+                ui.add(egui::Label::new(egui::RichText::new(header).strong().size(16.0)));
+            } else if let Some(header) = line.strip_prefix("### ") {
+                ui.add(egui::Label::new(egui::RichText::new(header).strong().size(14.0)));
+            } else {
+                let (is_bullet, content) = if let Some(bullet) = line.strip_prefix("* ") {
+                    (true, bullet)
+                } else if let Some(bullet) = line.strip_prefix("- ") {
+                    (true, bullet)
+                } else {
+                    (false, line)
+                };
+
+                ui.horizontal(|ui| {
+                    if is_bullet {
+                        ui.label("•");
+                    }
+                    render_inline_styled_text(ui, content);
+                });
+            }
+        }
+    });
+}
+
+fn render_inline_styled_text(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        
+        let mut current = text;
+        while !current.is_empty() {
+            let next_bold = current.find("**");
+            let next_code = current.find('`');
+            
+            match (next_bold, next_code) {
+                (Some(b_idx), Some(c_idx)) => {
+                    if b_idx < c_idx {
+                        if b_idx > 0 {
+                            ui.label(&current[..b_idx]);
+                        }
+                        let remaining = &current[b_idx + 2..];
+                        if let Some(end_bold) = remaining.find("**") {
+                            ui.strong(&remaining[..end_bold]);
+                            current = &remaining[end_bold + 2..];
+                        } else {
+                            ui.label(&current[b_idx..]);
+                            break;
+                        }
+                    } else {
+                        if c_idx > 0 {
+                            ui.label(&current[..c_idx]);
+                        }
+                        let remaining = &current[c_idx + 1..];
+                        if let Some(end_code) = remaining.find('`') {
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(&remaining[..end_code])
+                                    .code()
+                                    .background_color(egui::Color32::from_rgba_unmultiplied(128, 128, 128, 30))
+                            ));
+                            current = &remaining[end_code + 1..];
+                        } else {
+                            ui.label(&current[c_idx..]);
+                            break;
+                        }
+                    }
+                }
+                (Some(b_idx), None) => {
+                    if b_idx > 0 {
+                        ui.label(&current[..b_idx]);
+                    }
+                    let remaining = &current[b_idx + 2..];
+                    if let Some(end_bold) = remaining.find("**") {
+                        ui.strong(&remaining[..end_bold]);
+                        current = &remaining[end_bold + 2..];
+                    } else {
+                        ui.label(&current[b_idx..]);
+                        break;
+                    }
+                }
+                (None, Some(c_idx)) => {
+                    if c_idx > 0 {
+                        ui.label(&current[..c_idx]);
+                    }
+                    let remaining = &current[c_idx + 1..];
+                    if let Some(end_code) = remaining.find('`') {
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(&remaining[..end_code])
+                                .code()
+                                .background_color(egui::Color32::from_rgba_unmultiplied(128, 128, 128, 30))
+                        ));
+                        current = &remaining[end_code + 1..];
+                    } else {
+                        ui.label(&current[c_idx..]);
+                        break;
+                    }
+                }
+                (None, None) => {
+                    ui.label(current);
+                    break;
+                }
+            }
+        }
+    });
 }
