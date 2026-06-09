@@ -12,7 +12,7 @@
 * **Fast Loadout**
 * **Bhop**
 * **Hold Item Bug**
-* **Gangsta Grip (In multiplayer)**
+* **Gangsta Grip**
 * **Quick Exit**
 * **Toggle All Macros**
 ---
