@@ -629,7 +629,7 @@ impl AppState {
                 },
                 Feature {
                     id: FeatureId::GangstaGrip,
-                    name: "Gangsta Grip (In multiplayer)".into(),
+                    name: "Gangsta Grip".into(),
                     bind_key: None,
                     enabled: false,
                     selecting: false,
