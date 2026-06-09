@@ -272,7 +272,7 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let title = "Nztool OAR v2.4.2";
+                let title = "Nztool OAR v2.4.3";
                 ui.vertical_centered(|ui| {
                     ui.heading(title);
                     if InputState.are_all_macros_disabled() {
@@ -657,6 +657,14 @@ impl eframe::App for KeyBindApp {
                             use std::os::windows::process::CommandExt;
                             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
                             let _ = cmd.spawn();
+                        }
+                        if ui.button("Check Updates").clicked() {
+                            if let Some(state_lock) = UPDATE_STATE.get() {
+                                if let Ok(mut update) = state_lock.lock() {
+                                    update.skipped = false;
+                                }
+                            }
+                            crate::update::check_for_updates();
                         }
                     });
                 });

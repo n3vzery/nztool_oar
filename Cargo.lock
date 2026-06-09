@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "nztool_oar"
-version = "2.4.2"
+version = "2.4.3"
 dependencies = [
  "eframe",
  "image",
