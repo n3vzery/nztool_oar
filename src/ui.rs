@@ -272,7 +272,7 @@ impl eframe::App for KeyBindApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let title = "Nztool OAR v2.4.3";
+                let title = "Nztool OAR v2.4.4";
                 ui.vertical_centered(|ui| {
                     ui.heading(title);
                     if InputState.are_all_macros_disabled() {
@@ -667,6 +667,14 @@ impl eframe::App for KeyBindApp {
                             crate::update::check_for_updates();
                         }
                     });
+
+                    ui.add_space(5.0);
+                    let mut tm = s.trust_mode;
+                    if ui.checkbox(&mut tm, "Trust Mode").changed() {
+                        s.trust_mode = tm;
+                        GLOBAL_STATE.trust_mode.store(tm, Ordering::SeqCst);
+                        let _ = s.save_config();
+                    }
                 });
 
                 if s.dev_mode {

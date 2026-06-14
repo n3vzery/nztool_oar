@@ -28,6 +28,7 @@ pub struct GlobalInputState {
     pub lmb_hold_active: AtomicBool,
     pub click_debug_enabled: AtomicBool,
     pub all_macros_disabled: AtomicBool,
+    pub trust_mode: AtomicBool,
 }
 
 impl GlobalInputState {
@@ -49,6 +50,7 @@ impl GlobalInputState {
             lmb_hold_active: AtomicBool::new(false),
             click_debug_enabled: AtomicBool::new(false),
             all_macros_disabled: AtomicBool::new(false),
+            trust_mode: AtomicBool::new(true),
         }
     }
 }
@@ -178,6 +180,9 @@ pub fn safe_lock<T>(mutex: &Arc<Mutex<T>>) -> Option<std::sync::MutexGuard<'_, T
 }
 
 pub fn is_game_focused() -> bool {
+    if !GLOBAL_STATE.trust_mode.load(Ordering::SeqCst) {
+        return true;
+    }
     const FOCUS_CACHE_TTL_MS: u64 = 100;
     let now = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() };
     let last = GLOBAL_STATE.last_focus_check.load(Ordering::Relaxed);
@@ -284,8 +289,13 @@ pub struct SerializableConfig {
     pub gun_tool_digit: u32,
     #[serde(default = "default_double_click_button")]
     pub double_click_button: DoubleClickButton,
+    #[serde(default = "default_trust_mode")]
+    pub trust_mode: bool,
 }
 
+fn default_trust_mode() -> bool {
+    true
+}
 fn default_double_click_button() -> DoubleClickButton {
     DoubleClickButton::Left
 }
@@ -343,6 +353,7 @@ pub struct AppState {
     pub selected_preset: String,
     pub preset_name_input: String,
     pub double_click_button: DoubleClickButton,
+    pub trust_mode: bool,
 }
 
 pub fn get_config_path() -> std::path::PathBuf {
@@ -392,6 +403,7 @@ impl AppState {
             hacking_esc_y_offset: self.hacking_esc_y_offset,
             gun_tool_digit: self.gun_tool_digit,
             double_click_button: self.double_click_button,
+            trust_mode: self.trust_mode,
         };
 
         let json = serde_json::to_string_pretty(&config)?;
@@ -430,6 +442,8 @@ impl AppState {
         self.hacking_esc_y_offset = config.hacking_esc_y_offset;
         self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
         self.double_click_button = config.double_click_button;
+        self.trust_mode = config.trust_mode;
+        GLOBAL_STATE.trust_mode.store(self.trust_mode, Ordering::SeqCst);
         Ok(())
     }
 
@@ -484,6 +498,7 @@ impl AppState {
             hacking_esc_y_offset: self.hacking_esc_y_offset,
             gun_tool_digit: self.gun_tool_digit,
             double_click_button: self.double_click_button,
+            trust_mode: self.trust_mode,
         };
 
         let json = serde_json::to_string_pretty(&config)?;
@@ -520,6 +535,8 @@ impl AppState {
         self.hacking_esc_y_offset = config.hacking_esc_y_offset;
         self.gun_tool_digit = config.gun_tool_digit.clamp(1, 3);
         self.double_click_button = config.double_click_button;
+        self.trust_mode = config.trust_mode;
+        GLOBAL_STATE.trust_mode.store(self.trust_mode, Ordering::SeqCst);
         let _ = self.save_config();
         Ok(())
     }
@@ -673,6 +690,7 @@ impl AppState {
             selected_preset: String::new(),
             preset_name_input: String::new(),
             double_click_button: DoubleClickButton::Left,
+            trust_mode: true,
         };
         state.update_screen_position();
         state.refresh_presets();
@@ -755,6 +773,8 @@ impl AppState {
         self.preset_name_input = String::new();
         self.monitor_id = "1".to_string();
         self.double_click_button = DoubleClickButton::Left;
+        self.trust_mode = true;
+        GLOBAL_STATE.trust_mode.store(true, Ordering::SeqCst);
         self.update_screen_position();
         self.refresh_presets();
     }

@@ -86,7 +86,7 @@ pub fn check_for_updates() {
         };
 
         let clean_tag = release.tag_name.trim_start_matches('v');
-        let current_version = "2.4.3";
+        let current_version = "2.4.4";
 
         if is_version_newer(clean_tag, current_version) {
             if let Some(asset) = release.assets.iter().find(|a| a.name == "nztool_oar.exe") {
